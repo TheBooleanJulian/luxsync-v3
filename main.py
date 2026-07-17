@@ -107,17 +107,17 @@ async def proxy_public_image(file_id: str, size_param: str, cache_prefix: str) -
     validate_drive_id(file_id)
     cache_key = f"{cache_prefix}/{file_id}"
 
-    # Already cached and a CDN is configured: send the browser straight to
-    # Cloudflare/B2 so zero bytes flow through this server for a cache hit.
-    if CDN_BASE_URL and cache.exists(cache_key):
-        return _cdn_redirect(cache_key)
-
-    if not CDN_BASE_URL:
-        cached = cache.get_bytes(cache_key)
-        if cached:
-            data, content_type = cached
-            return Response(content=data, media_type=content_type,
-                             headers={"Cache-Control": "public, max-age=2592000, immutable"})
+    # Cache hit: a plain GetObject is the one S3 operation every
+    # S3-compatible provider is guaranteed to get right (HeadObject and
+    # ranged-GetObject existence checks against B2 both produced false
+    # positives for keys that were never written — see commit history).
+    cached = cache.get_bytes(cache_key)
+    if cached:
+        if CDN_BASE_URL:
+            return _cdn_redirect(cache_key)
+        data, content_type = cached
+        return Response(content=data, media_type=content_type,
+                         headers={"Cache-Control": "public, max-age=2592000, immutable"})
 
     # Cache miss: fetch from Drive's public (keyless) thumbnail endpoint once,
     # store it, then serve it (via CDN redirect if configured, else directly).

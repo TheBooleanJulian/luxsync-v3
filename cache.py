@@ -79,28 +79,14 @@ def put_json(key: str, data) -> bool:
         return False
 
 
-def exists(key: str) -> bool:
-    # Deliberately not HeadObject: it produced false positives for keys that
-    # were never written when tested against Backblaze B2 (see commit
-    # history). A 1-byte ranged GetObject costs about the same but actually
-    # has to retrieve real object data to succeed, so it can't lie the same way.
-    if not BUCKET:
-        return False
-    try:
-        _s3().get_object(Bucket=BUCKET, Key=key, Range="bytes=0-0")
-        _log(f"exists=True for key={key}")
-        return True
-    except Exception as e:
-        _log(f"exists=False for key={key}: {e!r}")
-        return False
-
-
 def get_bytes(key: str):
     if not BUCKET:
         return None
     try:
         obj = _s3().get_object(Bucket=BUCKET, Key=key)
-        return obj["Body"].read(), obj.get("ContentType", "application/octet-stream")
+        data = obj["Body"].read()
+        _log(f"get_bytes HIT for key={key} ({len(data)} bytes)")
+        return data, obj.get("ContentType", "application/octet-stream")
     except Exception as e:
         _log(f"get_bytes miss/error for key={key}: {e!r}")
         return None
