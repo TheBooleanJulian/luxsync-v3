@@ -166,6 +166,7 @@
   }
   .frame.in{opacity:1; transform:translateY(0);}
   .frame:hover{border-color:var(--line-strong);}
+  .frame.selected{border-color:var(--teal);}
   .frame img{
     width:100%; display:block; background:var(--panel-raised);
     filter:saturate(0.96);
@@ -193,6 +194,19 @@
   .frame .dl:hover{border-color:var(--teal); background:rgba(0,212,200,0.14);}
   .frame .dl svg{width:14px; height:14px; stroke:var(--ink);}
   .frame .dl:hover svg{stroke:var(--teal);}
+  .frame .select{
+    position:absolute; top:10px; right:10px;
+    width:22px; height:22px; border-radius:50%;
+    background:rgba(5,5,8,0.72); backdrop-filter:blur(4px);
+    border:1px solid var(--line-strong);
+    display:flex; align-items:center; justify-content:center;
+    opacity:0; transition:opacity 0.2s ease, border-color 0.2s ease, background 0.2s ease;
+  }
+  .frame:hover .select, .frame.selected .select{opacity:1;}
+  .frame .select:hover{border-color:var(--teal);}
+  .frame.selected .select{background:var(--teal); border-color:var(--teal);}
+  .frame .select svg{width:12px; height:12px; stroke:var(--ink); opacity:0; transition:opacity 0.15s ease;}
+  .frame.selected .select svg{opacity:1; stroke:#00201d;}
 
   .skeleton{
     position:absolute; top:0; left:0; border-radius:2px;
@@ -276,6 +290,7 @@
     <div class="brand"><span class="mark">◆</span><span class="name">LuxSync v3</span></div>
     <div class="meta-row" id="metaRow" style="display:none;">
       <span class="mono" id="photoCount">— frames</span>
+      <button class="btn" id="downloadSelectedBtn" disabled>Download Selected</button>
       <button class="btn" id="shareBtn">Share</button>
       <button class="btn primary" id="downloadAllBtn">Download All</button>
     </div>
@@ -360,6 +375,7 @@
   let currentSort = 'date-asc';
   let currentFolderId = null;
   let pendingSort = null;
+  let selectedIds = new Set();
 
   const els = {
     setup: document.getElementById('setup'),
@@ -368,6 +384,7 @@
     folderUrl: document.getElementById('folderUrl'),
     metaRow: document.getElementById('metaRow'),
     photoCount: document.getElementById('photoCount'),
+    downloadSelectedBtn: document.getElementById('downloadSelectedBtn'),
     shareBtn: document.getElementById('shareBtn'),
     downloadAllBtn: document.getElementById('downloadAllBtn'),
     galleryHead: document.getElementById('galleryHead'),
@@ -549,9 +566,16 @@
       dl.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><polyline points="7 11 12 16 17 11"/><line x1="5" y1="20" x2="19" y2="20"/></svg>';
       dl.addEventListener('click', (e)=>{ e.stopPropagation(); triggerDownload(p); });
 
+      const select = document.createElement('div');
+      select.className = 'select';
+      select.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>';
+      select.addEventListener('click', (e)=>{ e.stopPropagation(); toggleSelected(p.id, frame); });
+      if(selectedIds.has(p.id)) frame.classList.add('selected');
+
       frame.appendChild(img);
       frame.appendChild(tag);
       frame.appendChild(dl);
+      frame.appendChild(select);
       frame.addEventListener('click', ()=> openLightbox(idx));
 
       els.grid.appendChild(frame);
@@ -572,6 +596,42 @@
     document.body.appendChild(a);
     a.click();
     a.remove();
+  }
+
+  // ---------- selection + zip download ----------
+  function toggleSelected(id, frame){
+    if(selectedIds.has(id)){ selectedIds.delete(id); frame.classList.remove('selected'); }
+    else { selectedIds.add(id); frame.classList.add('selected'); }
+    updateSelectionUI();
+  }
+
+  function updateSelectionUI(){
+    const n = selectedIds.size;
+    els.downloadSelectedBtn.textContent = n > 0 ? `Download Selected (${n})` : 'Download Selected';
+    els.downloadSelectedBtn.disabled = n === 0;
+  }
+
+  function downloadAsZip(list){
+    const form = document.createElement('form');
+    form.method = 'POST';
+    form.action = '/api/download-zip';
+    form.target = '_blank';
+    form.style.display = 'none';
+    const input = document.createElement('input');
+    input.type = 'hidden';
+    input.name = 'files';
+    input.value = JSON.stringify(list.map(p=> ({ id: p.id, name: p.name })));
+    form.appendChild(input);
+    document.body.appendChild(form);
+    form.submit();
+    form.remove();
+  }
+
+  function downloadSelected(){
+    const selected = photos.filter(p=> selectedIds.has(p.id));
+    if(selected.length === 0) return;
+    if(selected.length === 1) triggerDownload(selected[0]);
+    else downloadAsZip(selected);
   }
 
   async function downloadAll(){
@@ -667,6 +727,8 @@
       els.photoCount.innerHTML = `<b>${photos.length}</b> frames`;
       els.metaRow.style.display = 'flex';
       els.downloadAllBtn.disabled = photos.length === 0;
+      selectedIds = new Set();
+      updateSelectionUI();
       renderGrid();
     } catch(err){
       els.setup.style.display = 'flex';
@@ -698,6 +760,7 @@
   });
 
   els.downloadAllBtn.addEventListener('click', downloadAll);
+  els.downloadSelectedBtn.addEventListener('click', downloadSelected);
 
   // ---------- auto-load from a shared link ----------
   (function initFromUrl(){

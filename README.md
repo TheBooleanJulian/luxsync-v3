@@ -20,9 +20,45 @@ does the real work:
 - `GET /api/download/{fileId}` — streams the original file through this server instead of
   linking straight to `drive.google.com`, so downloads are rate-limited the same as
   everything else.
+- `POST /api/download-zip` — select multiple photos in the grid (the small circle in the
+  corner of each frame) and click **Download Selected**: with 2+ selected, this endpoint
+  streams a zip built on the fly with [stream-zip](https://pypi.org/project/stream-zip/),
+  piping each file straight from Drive into the zip into the HTTP response — nothing is
+  buffered in memory or on disk, so a 500-photo zip costs the same RAM as a 5-photo one.
+  With exactly one selected, it just downloads that file directly instead of a 1-item zip.
 
 Every route above is IP-rate-limited independently, so one visitor hammering refresh
 degrades gracefully instead of burning through Drive's quota for everyone.
+
+### Serving cached images via Cloudflare instead of through this server
+
+If `CDN_BASE_URL` is set, `/api/thumb` and `/api/full` skip proxying bytes for anything
+already cached — they just `302` the browser straight to the CDN. Point that at a
+Cloudflare-proxied CNAME in front of your B2/R2 bucket and:
+
+- B2 egress is free when traffic actually routes through Cloudflare's proxy (the
+  [Bandwidth Alliance](https://www.cloudflare.com/bandwidth-alliance/)) — a DNS-only
+  (grey cloud) record does **not** qualify, it has to be proxied (orange cloud).
+- This server's own bandwidth/CPU drops to near zero for repeat image requests, since it's
+  no longer in the data path at all for cache hits.
+
+**Setting it up (Backblaze B2 + Cloudflare):**
+1. [backblaze.com](https://www.backblaze.com/) → B2 Cloud Storage → create a bucket
+   (e.g. `luxsync-cache`), **Files in Bucket: Public** (these are just cached copies of
+   photos already shared publicly via the Drive link).
+2. Note the bucket's **Endpoint** (e.g. `s3.us-west-004.backblazeb2.com`) and **Friendly
+   URL** host (e.g. `f004.backblazeb2.com`) from the bucket's details page.
+3. **App Keys → Add a New Application Key**, restricted to that bucket, Read+Write — this
+   gives you `S3_ACCESS_KEY_ID` / `S3_SECRET_ACCESS_KEY`.
+4. In Cloudflare (your domain must already be on Cloudflare): **DNS → Add record** — type
+   `CNAME`, name e.g. `cdn`, target = the bucket's Friendly URL host, **Proxy status:
+   Proxied** (this is the part that actually triggers free egress).
+5. **SSL/TLS → Overview** → encryption mode **Full**.
+6. `CDN_BASE_URL` = `https://cdn.yourdomain.com/file/luxsync-cache` (native B2 URL shape:
+   `/file/<bucket>/<key>` — the code just appends the cache key).
+
+Without `CDN_BASE_URL` set, thumbnails/full images still get cached in B2/R2 exactly as
+before, just proxied through this server on every request instead of redirected.
 
 ## Requirements
 
@@ -61,6 +97,7 @@ degrades gracefully instead of burning through Drive's quota for everyone.
 | `S3_SECRET_ACCESS_KEY`     | no       | S3 secret key                                         |
 | `S3_REGION`                | no       | Defaults to `auto` (fine for R2)                      |
 | `FOLDER_CACHE_TTL_SECONDS` | no       | Folder listing cache lifetime, default `600`          |
+| `CDN_BASE_URL`             | no       | Cloudflare-fronted B2/R2 base URL for free-egress image serving (see below) |
 
 ## Local dev
 
@@ -106,10 +143,13 @@ The header's **Share** button copies a link like `https://yourdomain/?folder=<id
 Opening that link pre-fills the folder field and auto-loads the gallery — no key or setup
 step for the recipient, since the key lives on the server now.
 
-## Known limitations (v2)
+## Known limitations (v3)
 
-- **"Download All" is sequential, not zipped.** Each photo downloads individually through
-  `/api/download/{id}` with a short delay between them, rather than one zip.
+- **"Download All" (as opposed to "Download Selected") is still sequential, not zipped.**
+  Selecting photos individually and using **Download Selected** gets you the streamed zip;
+  "Download All" just triggers every download one after another.
+- **Zips are capped at `MAX_ZIP_FILES` (200)** per request to keep one request from tying
+  up a Drive-fetching connection pool indefinitely.
 - **Folder cache TTL is time-based, not push-based.** If a client adds/removes photos from
   the Drive folder, changes show up after the cache entry expires (`FOLDER_CACHE_TTL_SECONDS`),
   not instantly. Lower the TTL if you need faster turnaround, at the cost of more Drive calls.
@@ -118,5 +158,5 @@ step for the recipient, since the key lives on the server now.
 
 - Give each client a slug/subdomain with custom branding.
 - Add basic auth or an access-code gate per gallery.
-- Real zipped "Download All" by streaming a zip through the server instead of N sequential
-  requests.
+- Make "Download All" just select everything and reuse the zip path instead of firing N
+  sequential single-file downloads.

@@ -53,6 +53,16 @@ def put_json(key: str, data) -> None:
     _s3().put_object(Bucket=BUCKET, Key=key, Body=payload, ContentType="application/json")
 
 
+def exists(key: str) -> bool:
+    if not BUCKET:
+        return False
+    try:
+        _s3().head_object(Bucket=BUCKET, Key=key)
+        return True
+    except ClientError:
+        return False
+
+
 def get_bytes(key: str):
     if not BUCKET:
         return None
