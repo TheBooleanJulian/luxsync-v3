@@ -295,12 +295,6 @@
         <input type="text" id="folderUrl" placeholder="https://drive.google.com/drive/folders/…" autocomplete="off">
         <div class="hint">Folder sharing must be set to <b style="color:var(--ink-dim);">Anyone with the link — Viewer</b>.</div>
       </div>
-      <div class="field" id="apiKeyField">
-        <label for="apiKey">Google Drive API key</label>
-        <input type="password" id="apiKey" placeholder="AIza…" autocomplete="off">
-        <div class="hint" id="apiKeyHint">Create one free in <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener">Google Cloud Console</a> with the Drive API enabled. Stored in this tab only — never sent anywhere but Google.</div>
-        <div class="hint mono" id="apiKeyStatus" style="display:none;"></div>
-      </div>
       <button type="submit" class="btn primary">Open Gallery</button>
       <div class="setup-error" id="setupError"></div>
     </form>
@@ -352,7 +346,6 @@
   </div>
 </div>
 
-<script src="config.js" onerror="void 0"></script>
 <script>
 (function(){
   'use strict';
@@ -373,10 +366,6 @@
     setupForm: document.getElementById('setupForm'),
     setupError: document.getElementById('setupError'),
     folderUrl: document.getElementById('folderUrl'),
-    apiKeyField: document.getElementById('apiKeyField'),
-    apiKey: document.getElementById('apiKey'),
-    apiKeyHint: document.getElementById('apiKeyHint'),
-    apiKeyStatus: document.getElementById('apiKeyStatus'),
     metaRow: document.getElementById('metaRow'),
     photoCount: document.getElementById('photoCount'),
     shareBtn: document.getElementById('shareBtn'),
@@ -394,20 +383,6 @@
     lbCounter: document.getElementById('lbCounter'),
     lbDownload: document.getElementById('lbDownload'),
   };
-
-  // key is supplied by config.js (local dev, see config.example.js) or baked in at
-  // deploy time from the LUXSYNC_API_KEY env var (see zbpack.json) — when present,
-  // show it (masked) instead of asking the visitor to type one in.
-  function maskKey(key){
-    return key.length > 10 ? key.slice(0, 6) + '…' + key.slice(-4) : key;
-  }
-  if(window.LUXSYNC_API_KEY){
-    els.apiKey.value = window.LUXSYNC_API_KEY;
-    els.apiKey.style.display = 'none';
-    els.apiKeyHint.style.display = 'none';
-    els.apiKeyStatus.textContent = 'Current API key read from Zeabur: ' + maskKey(window.LUXSYNC_API_KEY);
-    els.apiKeyStatus.style.display = 'block';
-  }
 
   function extractFolderId(url){
     const patterns = [
@@ -429,34 +404,13 @@
   }
   function clearError(){ els.setupError.style.display = 'none'; }
 
-  async function fetchFolderName(folderId, apiKey){
-    const url = `https://www.googleapis.com/drive/v3/files/${folderId}?fields=${encodeURIComponent('name')}&key=${apiKey}`;
-    const res = await fetch(url);
-    const data = await res.json();
+  async function fetchGallery(folderId){
+    const res = await fetch(`/api/gallery/${folderId}`);
+    const data = await res.json().catch(()=> ({}));
     if(!res.ok){
-      const msg = data && data.error && data.error.message ? data.error.message : 'Request failed';
-      throw new Error(msg);
+      throw new Error(data.detail || 'Request failed');
     }
-    return data.name;
-  }
-
-  async function fetchFolder(folderId, apiKey){
-    const fields = 'nextPageToken,files(id,name,thumbnailLink,imageMediaMetadata,webContentLink,mimeType,createdTime,modifiedTime)';
-    let all = [];
-    let pageToken = '';
-    do {
-      const q = encodeURIComponent(`'${folderId}' in parents and mimeType contains 'image/' and trashed = false`);
-      const url = `https://www.googleapis.com/drive/v3/files?q=${q}&fields=${encodeURIComponent(fields)}&pageSize=1000&key=${apiKey}${pageToken ? '&pageToken='+pageToken : ''}`;
-      const res = await fetch(url);
-      const data = await res.json();
-      if(!res.ok){
-        const msg = data && data.error && data.error.message ? data.error.message : 'Request failed';
-        throw new Error(msg);
-      }
-      all = all.concat(data.files || []);
-      pageToken = data.nextPageToken || '';
-    } while(pageToken);
-    return all;
+    return data; // { name, files }
   }
 
   function parseExifTime(t){
@@ -482,9 +436,9 @@
       return {
         id: f.id,
         name: f.name,
-        thumb: `https://drive.google.com/thumbnail?id=${f.id}&sz=w600`,
-        full: `https://drive.google.com/thumbnail?id=${f.id}&sz=w2200`,
-        downloadUrl: `https://drive.google.com/uc?export=download&id=${f.id}`,
+        thumb: `/api/thumb/${f.id}`,
+        full: `/api/full/${f.id}`,
+        downloadUrl: `/api/download/${f.id}?name=${encodeURIComponent(f.name)}`,
         takenAt,
         modifiedAt,
         aspect: getAspect(f)
@@ -688,9 +642,7 @@
     e.preventDefault();
     clearError();
     const rawUrl = els.folderUrl.value.trim();
-    const key = els.apiKey.value.trim();
     if(!rawUrl){ showError('Enter the folder link.'); return; }
-    if(!key){ showError('Enter both the folder link and an API key.'); return; }
     const folderId = extractFolderId(rawUrl);
     if(!folderId){ showError('Could not read a folder ID from that link. Paste the full Drive folder URL.'); return; }
 
@@ -705,10 +657,7 @@
     renderSkeletons(10);
 
     try {
-      const [folderName, files] = await Promise.all([
-        fetchFolderName(folderId, key),
-        fetchFolder(folderId, key)
-      ]);
+      const { name: folderName, files } = await fetchGallery(folderId);
       currentFolderId = folderId;
       currentSort = pendingSort || 'date-asc';
       pendingSort = null;
@@ -723,7 +672,7 @@
       els.setup.style.display = 'flex';
       els.galleryHead.style.display = 'none';
       els.grid.style.display = 'none';
-      showError('Could not load this folder — ' + err.message + '. Check the folder is shared publicly and the API key has the Drive API enabled.');
+      showError('Could not load this folder — ' + err.message + '. Check the folder is shared publicly (Anyone with the link — Viewer).');
     } finally {
       submitBtn.disabled = false;
       submitBtn.textContent = 'Open Gallery';
@@ -758,9 +707,7 @@
     els.folderUrl.value = folderParam;
     const sortParam = params.get('sort');
     if(sortParam) pendingSort = sortParam;
-    if(els.apiKey.value.trim()){
-      els.setupForm.requestSubmit();
-    }
+    els.setupForm.requestSubmit();
   })();
 
 })();

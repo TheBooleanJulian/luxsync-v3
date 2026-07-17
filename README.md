@@ -1,76 +1,94 @@
 # LuxSync v3
 
-A premium, dependency-free photo gallery that turns any public Google Drive folder into a
-scrollable, previewable, downloadable client gallery. Pure static HTML/CSS/JS — no backend,
-no build step.
+A premium photo gallery that turns any public Google Drive folder into a scrollable,
+previewable, downloadable client gallery. FastAPI backend + a single self-contained
+HTML frontend — no database, no build step.
 
 ## How it works
 
-Client pastes a Drive folder link + a Drive API key into the setup screen. The page calls the
-Drive API v3 `files.list` endpoint directly from the browser, renders a masonry contact-sheet
-grid, and opens a full lightbox on click with keyboard/swipe navigation and download.
+Client pastes a Drive folder link into the setup screen. The **browser never talks to
+Google directly** — it calls this app's own backend, which holds the Drive API key and
+does the real work:
+
+- `GET /api/gallery/{folderId}` — calls Drive's `files.get` + `files.list` with the
+  server-side key, and caches the result (folder name + file list) in object storage for
+  `FOLDER_CACHE_TTL_SECONDS` (default 10 minutes). This is the only place the API key is
+  ever used, so a cache hit costs zero Drive API quota.
+- `GET /api/thumb/{fileId}` / `GET /api/full/{fileId}` — fetch the image from Drive's
+  public (keyless) thumbnail endpoint once, cache the bytes in object storage
+  permanently, and serve from cache after that.
+- `GET /api/download/{fileId}` — streams the original file through this server instead of
+  linking straight to `drive.google.com`, so downloads are rate-limited the same as
+  everything else.
+
+Every route above is IP-rate-limited independently, so one visitor hammering refresh
+degrades gracefully instead of burning through Drive's quota for everyone.
 
 ## Requirements
 
 - The Drive folder must be shared as **Anyone with the link — Viewer**.
-- A **Google Drive API key** (Drive API v3 enabled). This is entered per session in the browser
-  and is never written to disk, cookies, or localStorage — it lives only in page memory and is
-  gone on refresh.
+- A **Google Drive API key** (Drive API v3 enabled), set server-side only (see below).
+- An **S3-compatible object storage bucket** for caching — [Cloudflare R2](https://developers.cloudflare.com/r2/)
+  or [Backblaze B2](https://www.backblaze.com/cloud-storage) both work as-is, since the
+  backend talks to them over the S3 API. R2 has free egress; B2 has a 10GB free tier.
+  Optional: if you don't set a bucket, the app still runs, it just re-hits Drive on every
+  request instead of caching.
 
-### Getting an API key
+### Getting a Drive API key
 1. [console.cloud.google.com](https://console.cloud.google.com/) → create/select a project.
 2. **APIs & Services → Library** → enable **Google Drive API**.
 3. **APIs & Services → Credentials → Create Credentials → API key**.
-4. (Recommended) Restrict the key to the Drive API and to your Zeabur domain under
-   **API restrictions** / **Application restrictions → HTTP referrers**.
+4. Restrict the key to the Drive API. You do **not** need to restrict it by HTTP referrer
+   this time — it never leaves the server, so there's no browser origin to restrict it to.
+
+### Getting an object storage bucket
+- **Cloudflare R2**: dashboard → R2 → Create bucket → create an S3 API token (Account →
+  R2 → Manage API Tokens) for `S3_ACCESS_KEY_ID` / `S3_SECRET_ACCESS_KEY`. Endpoint is
+  `https://<account-id>.r2.cloudflarestorage.com`.
+- **Backblaze B2**: create a bucket, then an "Application Key" restricted to it for the
+  same two values. Endpoint looks like `https://s3.<region>.backblazeb2.com`.
+- Optional: set a lifecycle rule on the bucket (in the provider's console) to expire
+  objects after N days if you don't want to keep cached thumbnails forever.
+
+## Environment variables
+
+| Variable                  | Required | Purpose                                             |
+|----------------------------|----------|------------------------------------------------------|
+| `DRIVE_API_KEY`            | yes      | Server-side Google Drive API key                     |
+| `S3_ENDPOINT_URL`          | no       | R2/B2 S3-compatible endpoint                          |
+| `S3_BUCKET`                | no       | Bucket name for cached folder listings/thumbnails     |
+| `S3_ACCESS_KEY_ID`         | no       | S3 access key                                         |
+| `S3_SECRET_ACCESS_KEY`     | no       | S3 secret key                                         |
+| `S3_REGION`                | no       | Defaults to `auto` (fine for R2)                      |
+| `FOLDER_CACHE_TTL_SECONDS` | no       | Folder listing cache lifetime, default `600`          |
 
 ## Local dev
 
-No build tooling required — it's one HTML file.
-
 ```bash
-python3 -m http.server 8080
+python3 -m venv .venv
+source .venv/bin/activate   # .venv\Scripts\activate on Windows
+pip install -r requirements.txt
+export DRIVE_API_KEY=your-key-here   # $env:DRIVE_API_KEY on PowerShell
+uvicorn main:app --reload --port 8080
 # open http://localhost:8080
 ```
 
-### Skip re-pasting your API key locally
-
-The app has no backend and no build step, so there's no real environment-variable
-mechanism — but you can get the same effect with a gitignored local config file:
-
-```bash
-cp config.example.js config.js
-```
-
-Edit `config.js` and set `window.LUXSYNC_API_KEY` to your key. `index.html` loads
-this file automatically and pre-fills the setup form's API key field with it, so
-you don't have to find and paste the key every time during local dev. `config.js`
-is in `.gitignore` and is never committed or deployed — it's
-purely a local convenience. Clients using the deployed gallery still paste their
-own key into the form as before (see "Known limitations" below).
+Object storage env vars are optional locally — without them, `/api/gallery`,
+`/api/thumb`, and `/api/full` just skip the cache and hit Drive every time.
 
 ## Deploy — GitHub → Zeabur
 
-1. This repo is already on GitHub at
-   [TheBooleanJulian/luxsync-v3](https://github.com/TheBooleanJulian/luxsync-v3). Push changes
-   with:
+1. Push changes to [TheBooleanJulian/luxsync-v3](https://github.com/TheBooleanJulian/luxsync-v3):
    ```bash
    git add .
    git commit -m "..."
    git push origin main
    ```
-2. In [Zeabur](https://zeabur.com): **New Project → Deploy from GitHub** → select this repo.
-3. In the service's **Variables** tab, add an environment variable named `LUXSYNC_API_KEY`
-   set to your Drive API key, then trigger a redeploy (adding a variable doesn't rebuild an
-   already-running service on its own).
-   The repo's [package.json](package.json) `build` script runs
-   [build-config.js](build-config.js), which writes that value into `config.js` at build
-   time; [zbpack.json](zbpack.json)'s `output_dir` then tells Zeabur to serve the repo root
-   as static files afterward instead of running a Node server. This pre-fills the setup
-   form's API key field — the same mechanism used for
-   [local dev](#skip-re-pasting-your-api-key-locally). Anyone else deploying their own copy
-   of this repo sets their own `LUXSYNC_API_KEY` in their own Zeabur project; nothing about
-   the key is shared between deployments.
+2. In [Zeabur](https://zeabur.com): **New Project → Deploy from GitHub** → select this
+   repo. Zeabur detects `requirements.txt` + [Procfile](Procfile) and runs
+   `uvicorn main:app --host 0.0.0.0 --port $PORT`.
+3. In the service's **Variables** tab, set `DRIVE_API_KEY` and the `S3_*` variables from
+   the table above, then redeploy.
 4. Add a custom domain under the service's **Domains** tab if you want a branded link
    (e.g. `gallery.luxsync.app`) to hand to clients.
 
@@ -79,24 +97,26 @@ own key into the form as before (see "Known limitations" below).
 ```
 feature/* → dev → main
 ```
-Point Zeabur's production service at `main`; spin up a second Zeabur service tracking `dev`
-for a staging preview if you want to test layout changes before clients see them.
+Point Zeabur's production service at `main`; spin up a second Zeabur service tracking
+`dev` for a staging preview if you want to test layout changes before clients see them.
 
-## Known limitations (v1)
+## Sharing a gallery
 
-- **API key is client-visible.** Fine for handing a link to a specific client; restrict the key
-  by HTTP referrer so it only works from your deployed domain. Not meant to be a fully public
-  self-serve product without a backend proxy.
-- **"Download All" is sequential, not zipped.** Google's direct-download URLs don't return CORS
-  headers, so an in-browser zip (fetch + JSZip) isn't reliable. Each photo downloads individually
-  with a short delay between them instead.
-- **No caching.** Every visit re-queries the Drive API live. Fine for typical gallery sizes;
-  for very large folders (1000+ files) initial load will take a few seconds longer.
+The header's **Share** button copies a link like `https://yourdomain/?folder=<id>&sort=date-asc`.
+Opening that link pre-fills the folder field and auto-loads the gallery — no key or setup
+step for the recipient, since the key lives on the server now.
+
+## Known limitations (v2)
+
+- **"Download All" is sequential, not zipped.** Each photo downloads individually through
+  `/api/download/{id}` with a short delay between them, rather than one zip.
+- **Folder cache TTL is time-based, not push-based.** If a client adds/removes photos from
+  the Drive folder, changes show up after the cache entry expires (`FOLDER_CACHE_TTL_SECONDS`),
+  not instantly. Lower the TTL if you need faster turnaround, at the cost of more Drive calls.
 
 ## Roadmap
 
-A FastAPI backend (matching your usual stack):
-- Keep the Drive API key server-side instead of in the browser.
-- Serve a real zipped download by streaming image bytes through your own server.
-- Give each client a slug/subdomain with cached thumbnails and custom branding.
+- Give each client a slug/subdomain with custom branding.
 - Add basic auth or an access-code gate per gallery.
+- Real zipped "Download All" by streaming a zip through the server instead of N sequential
+  requests.

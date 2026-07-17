@@ -1,7 +1,0 @@
-{
-  "name": "luxsync-v3",
-  "private": true,
-  "scripts": {
-    "build": "node build-config.js"
-  }
-}
