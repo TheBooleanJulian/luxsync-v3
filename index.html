@@ -525,7 +525,7 @@
       return;
     }
     els.emptyState.style.display = 'none';
-    els.grid.style.display = 'block';
+    els.grid.style.display = 'grid';
 
     photos.forEach((p, idx)=>{
       const frame = document.createElement('div');
@@ -648,7 +648,7 @@
     els.setup.style.display = 'none';
     els.galleryHead.style.display = 'block';
     els.galleryTitle.textContent = 'Loading gallery…';
-    els.grid.style.display = 'block';
+    els.grid.style.display = 'grid';
     renderSkeletons(10);
 
     try {
