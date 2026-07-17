@@ -1,0 +1,4 @@
+{
+  "build_command": "echo \"window.LUXSYNC_API_KEY = '$LUXSYNC_API_KEY';\" > config.js",
+  "output_dir": "."
+}

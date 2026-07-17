@@ -326,6 +326,7 @@
   </div>
 </div>
 
+<script src="config.js" onerror="void 0"></script>
 <script>
 (function(){
   'use strict';
@@ -360,6 +361,9 @@
     lbCounter: document.getElementById('lbCounter'),
     lbDownload: document.getElementById('lbDownload'),
   };
+
+  // local dev convenience: prefill from config.js (gitignored, see config.example.js)
+  if(window.LUXSYNC_API_KEY) els.apiKey.value = window.LUXSYNC_API_KEY;
 
   function extractFolderId(url){
     const patterns = [

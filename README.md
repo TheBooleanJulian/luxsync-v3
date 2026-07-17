@@ -33,6 +33,22 @@ python3 -m http.server 8080
 # open http://localhost:8080
 ```
 
+### Skip re-pasting your API key locally
+
+The app has no backend and no build step, so there's no real environment-variable
+mechanism — but you can get the same effect with a gitignored local config file:
+
+```bash
+cp config.example.js config.js
+```
+
+Edit `config.js` and set `window.LUXSYNC_API_KEY` to your key. `index.html` (and
+`luxsync-v3.html`) load this file automatically and pre-fill the setup form's API
+key field with it, so you don't have to find and paste the key every time during
+local dev. `config.js` is in `.gitignore` and is never committed or deployed — it's
+purely a local convenience. Clients using the deployed gallery still paste their
+own key into the form as before (see "Known limitations" below).
+
 ## Deploy — GitHub → Zeabur
 
 1. This repo is already on GitHub at
@@ -44,8 +60,14 @@ python3 -m http.server 8080
    git push origin main
    ```
 2. In [Zeabur](https://zeabur.com): **New Project → Deploy from GitHub** → select this repo.
-3. Zeabur auto-detects it as a static site (root `index.html`). No environment variables are
-   needed since the API key is supplied by whoever opens the page, not baked into the build.
+3. Zeabur auto-detects it as a static site (root `index.html`). In the service's
+   **Variables** tab, add an environment variable named `LUXSYNC_API_KEY` set to your Drive
+   API key.
+   [zbpack.json](zbpack.json) at the repo root runs a build step that writes that value into
+   `config.js` before the site is served, which pre-fills the setup form's API key field —
+   the same mechanism used for [local dev](#skip-re-pasting-your-api-key-locally). Anyone
+   else deploying their own copy of this repo sets their own `LUXSYNC_API_KEY` in their own
+   Zeabur project; nothing about the key is shared between deployments.
 4. Add a custom domain under the service's **Domains** tab if you want a branded link
    (e.g. `gallery.luxsync.app`) to hand to clients.
 
