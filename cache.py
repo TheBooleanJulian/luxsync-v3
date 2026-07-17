@@ -40,7 +40,11 @@ def _s3():
             aws_access_key_id=os.environ.get("S3_ACCESS_KEY_ID"),
             aws_secret_access_key=os.environ.get("S3_SECRET_ACCESS_KEY"),
             region_name=os.environ.get("S3_REGION", "auto"),
-            config=Config(signature_version="s3v4"),
+            # Path-style addressing (bucket in the URL path, not a subdomain)
+            # is the standard-recommended setting for non-AWS S3-compatible
+            # providers — virtual-hosted-style (the boto3 default) is where
+            # HeadObject false-positives against B2 have been traced to.
+            config=Config(signature_version="s3v4", s3={"addressing_style": "path"}),
         )
     return _client
 
@@ -76,10 +80,14 @@ def put_json(key: str, data) -> bool:
 
 
 def exists(key: str) -> bool:
+    # Deliberately not HeadObject: it produced false positives for keys that
+    # were never written when tested against Backblaze B2 (see commit
+    # history). A 1-byte ranged GetObject costs about the same but actually
+    # has to retrieve real object data to succeed, so it can't lie the same way.
     if not BUCKET:
         return False
     try:
-        _s3().head_object(Bucket=BUCKET, Key=key)
+        _s3().get_object(Bucket=BUCKET, Key=key, Range="bytes=0-0")
         _log(f"exists=True for key={key}")
         return True
     except Exception as e:
