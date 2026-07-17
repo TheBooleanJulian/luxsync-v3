@@ -285,7 +285,8 @@
       <div class="field" id="apiKeyField">
         <label for="apiKey">Google Drive API key</label>
         <input type="password" id="apiKey" placeholder="AIza…" autocomplete="off">
-        <div class="hint">Create one free in <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener">Google Cloud Console</a> with the Drive API enabled. Stored in this tab only — never sent anywhere but Google.</div>
+        <div class="hint" id="apiKeyHint">Create one free in <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener">Google Cloud Console</a> with the Drive API enabled. Stored in this tab only — never sent anywhere but Google.</div>
+        <div class="hint mono" id="apiKeyStatus" style="display:none;"></div>
       </div>
       <button type="submit" class="btn primary">Open Gallery</button>
       <div class="setup-error" id="setupError"></div>
@@ -346,6 +347,8 @@
     folderUrl: document.getElementById('folderUrl'),
     apiKeyField: document.getElementById('apiKeyField'),
     apiKey: document.getElementById('apiKey'),
+    apiKeyHint: document.getElementById('apiKeyHint'),
+    apiKeyStatus: document.getElementById('apiKeyStatus'),
     metaRow: document.getElementById('metaRow'),
     photoCount: document.getElementById('photoCount'),
     changeBtn: document.getElementById('changeBtn'),
@@ -365,10 +368,16 @@
 
   // key is supplied by config.js (local dev, see config.example.js) or baked in at
   // deploy time from the LUXSYNC_API_KEY env var (see zbpack.json) — when present,
-  // there's nothing for the visitor to enter.
+  // show it (masked) instead of asking the visitor to type one in.
+  function maskKey(key){
+    return key.length > 10 ? key.slice(0, 6) + '…' + key.slice(-4) : key;
+  }
   if(window.LUXSYNC_API_KEY){
     els.apiKey.value = window.LUXSYNC_API_KEY;
-    els.apiKeyField.style.display = 'none';
+    els.apiKey.style.display = 'none';
+    els.apiKeyHint.style.display = 'none';
+    els.apiKeyStatus.textContent = 'Current API key read from Zeabur: ' + maskKey(window.LUXSYNC_API_KEY);
+    els.apiKeyStatus.style.display = 'block';
   }
 
   function extractFolderId(url){
