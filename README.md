@@ -60,14 +60,17 @@ own key into the form as before (see "Known limitations" below).
    git push origin main
    ```
 2. In [Zeabur](https://zeabur.com): **New Project → Deploy from GitHub** → select this repo.
-3. Zeabur auto-detects it as a static site (root `index.html`). In the service's
-   **Variables** tab, add an environment variable named `LUXSYNC_API_KEY` set to your Drive
-   API key.
-   [zbpack.json](zbpack.json) at the repo root runs a build step that writes that value into
-   `config.js` before the site is served, which pre-fills the setup form's API key field —
-   the same mechanism used for [local dev](#skip-re-pasting-your-api-key-locally). Anyone
-   else deploying their own copy of this repo sets their own `LUXSYNC_API_KEY` in their own
-   Zeabur project; nothing about the key is shared between deployments.
+3. In the service's **Variables** tab, add an environment variable named `LUXSYNC_API_KEY`
+   set to your Drive API key, then trigger a redeploy (adding a variable doesn't rebuild an
+   already-running service on its own).
+   The repo's [package.json](package.json) `build` script runs
+   [build-config.js](build-config.js), which writes that value into `config.js` at build
+   time; [zbpack.json](zbpack.json)'s `output_dir` then tells Zeabur to serve the repo root
+   as static files afterward instead of running a Node server. This pre-fills the setup
+   form's API key field — the same mechanism used for
+   [local dev](#skip-re-pasting-your-api-key-locally). Anyone else deploying their own copy
+   of this repo sets their own `LUXSYNC_API_KEY` in their own Zeabur project; nothing about
+   the key is shared between deployments.
 4. Add a custom domain under the service's **Domains** tab if you want a branded link
    (e.g. `gallery.luxsync.app`) to hand to clients.
 
