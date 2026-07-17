@@ -131,21 +131,36 @@
 
   /* ---------- gallery grid ---------- */
   .gallery-head{padding:44px 0 28px;}
+  .gallery-head-row{
+    display:flex; align-items:flex-end; justify-content:space-between;
+    gap:20px; flex-wrap:wrap;
+  }
   .gallery-head .eyebrow{
     font-family:'JetBrains Mono',monospace; font-size:11px; letter-spacing:0.14em;
     color:var(--ink-faint); text-transform:uppercase; margin-bottom:10px;
   }
   .gallery-head h2{font-size:clamp(26px,3.4vw,38px); font-weight:600; letter-spacing:-0.01em;}
+  .sort-select{
+    font-family:'JetBrains Mono',monospace;
+    font-size:11.5px; letter-spacing:0.06em; text-transform:uppercase;
+    padding:10px 30px 10px 14px; border-radius:2px; cursor:pointer;
+    border:1px solid var(--line-strong);
+    background:var(--panel) url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="%237a8085" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>') no-repeat right 8px center;
+    background-size:16px; color:var(--ink); appearance:none; -webkit-appearance:none;
+    transition:border-color 0.18s ease, color 0.18s ease;
+  }
+  .sort-select:hover, .sort-select:focus{border-color:var(--teal); color:var(--teal); outline:none;}
+  .sort-select option{background:var(--panel); color:var(--ink);}
 
   .grid{
-    column-count:1; column-gap:14px;
+    display:grid; grid-template-columns:repeat(1,1fr); gap:14px; align-items:start;
   }
-  @media(min-width:640px){.grid{column-count:2;}}
-  @media(min-width:980px){.grid{column-count:3;}}
-  @media(min-width:1320px){.grid{column-count:4;}}
+  @media(min-width:640px){.grid{grid-template-columns:repeat(2,1fr);}}
+  @media(min-width:980px){.grid{grid-template-columns:repeat(3,1fr);}}
+  @media(min-width:1320px){.grid{grid-template-columns:repeat(4,1fr);}}
 
   .frame{
-    break-inside:avoid; margin-bottom:14px; position:relative;
+    position:relative;
     border:1px solid var(--line); background:var(--panel);
     cursor:pointer; overflow:hidden; border-radius:2px;
     opacity:0; transform:translateY(16px);
@@ -182,7 +197,7 @@
   .frame .dl:hover svg{stroke:var(--teal);}
 
   .skeleton{
-    break-inside:avoid; margin-bottom:14px; border-radius:2px;
+    border-radius:2px;
     background:linear-gradient(100deg, var(--panel) 30%, var(--panel-raised) 45%, var(--panel) 60%);
     background-size:300% 100%;
     animation:shimmer 1.6s ease-in-out infinite;
@@ -294,8 +309,20 @@
   </section>
 
   <section class="gallery-head" id="galleryHead" style="display:none;">
-    <div class="eyebrow" id="galleryEyebrow">Contact Sheet</div>
-    <h2 id="galleryTitle">Gallery</h2>
+    <div class="gallery-head-row">
+      <div>
+        <div class="eyebrow" id="galleryEyebrow">Contact Sheet</div>
+        <h2 id="galleryTitle">Gallery</h2>
+      </div>
+      <select class="sort-select" id="sortSelect">
+        <option value="date-asc">Date taken (oldest first)</option>
+        <option value="date-desc">Date taken (newest first)</option>
+        <option value="name-asc">Name (A–Z)</option>
+        <option value="name-desc">Name (Z–A)</option>
+        <option value="modified-desc">Latest modified</option>
+        <option value="modified-asc">Oldest modified</option>
+      </select>
+    </div>
   </section>
 
   <div class="grid" id="grid" style="display:none;"></div>
@@ -337,8 +364,9 @@
   for(let i=0;i<80;i++){ const s=document.createElement('span'); sprocketRow.appendChild(s); }
 
   // ---------- state ----------
-  let photos = [];        // { id, name, thumb, full, downloadUrl }
+  let photos = [];        // { id, name, thumb, full, downloadUrl, takenAt, modifiedAt }
   let currentIndex = -1;
+  let currentSort = 'date-asc';
 
   const els = {
     setup: document.getElementById('setup'),
@@ -355,6 +383,7 @@
     downloadAllBtn: document.getElementById('downloadAllBtn'),
     galleryHead: document.getElementById('galleryHead'),
     galleryTitle: document.getElementById('galleryTitle'),
+    sortSelect: document.getElementById('sortSelect'),
     grid: document.getElementById('grid'),
     emptyState: document.getElementById('emptyState'),
     lightbox: document.getElementById('lightbox'),
@@ -400,8 +429,19 @@
   }
   function clearError(){ els.setupError.style.display = 'none'; }
 
+  async function fetchFolderName(folderId, apiKey){
+    const url = `https://www.googleapis.com/drive/v3/files/${folderId}?fields=${encodeURIComponent('name')}&key=${apiKey}`;
+    const res = await fetch(url);
+    const data = await res.json();
+    if(!res.ok){
+      const msg = data && data.error && data.error.message ? data.error.message : 'Request failed';
+      throw new Error(msg);
+    }
+    return data.name;
+  }
+
   async function fetchFolder(folderId, apiKey){
-    const fields = 'nextPageToken,files(id,name,thumbnailLink,imageMediaMetadata,webContentLink,mimeType)';
+    const fields = 'nextPageToken,files(id,name,thumbnailLink,imageMediaMetadata,webContentLink,mimeType,createdTime,modifiedTime)';
     let all = [];
     let pageToken = '';
     do {
@@ -419,14 +459,42 @@
     return all;
   }
 
+  function parseExifTime(t){
+    if(!t) return null;
+    // EXIF format "YYYY:MM:DD HH:MM:SS" -> ISO-parseable "YYYY-MM-DDTHH:MM:SS"
+    const iso = t.replace(/^(\d{4}):(\d{2}):(\d{2})/, '$1-$2-$3');
+    const d = new Date(iso);
+    return isNaN(d) ? null : d;
+  }
+
   function buildPhotoObjects(files){
-    return files.map(f => ({
-      id: f.id,
-      name: f.name,
-      thumb: `https://drive.google.com/thumbnail?id=${f.id}&sz=w600`,
-      full: `https://drive.google.com/thumbnail?id=${f.id}&sz=w2200`,
-      downloadUrl: `https://drive.google.com/uc?export=download&id=${f.id}`
-    }));
+    return files.map(f => {
+      const takenAt = parseExifTime(f.imageMediaMetadata && f.imageMediaMetadata.time) || new Date(f.createdTime);
+      const modifiedAt = new Date(f.modifiedTime || f.createdTime);
+      return {
+        id: f.id,
+        name: f.name,
+        thumb: `https://drive.google.com/thumbnail?id=${f.id}&sz=w600`,
+        full: `https://drive.google.com/thumbnail?id=${f.id}&sz=w2200`,
+        downloadUrl: `https://drive.google.com/uc?export=download&id=${f.id}`,
+        takenAt,
+        modifiedAt
+      };
+    });
+  }
+
+  function sortPhotos(list, sortKey){
+    const sorted = list.slice();
+    switch(sortKey){
+      case 'date-desc': sorted.sort((a,b)=> b.takenAt - a.takenAt); break;
+      case 'name-asc': sorted.sort((a,b)=> a.name.localeCompare(b.name, undefined, {numeric:true, sensitivity:'base'})); break;
+      case 'name-desc': sorted.sort((a,b)=> b.name.localeCompare(a.name, undefined, {numeric:true, sensitivity:'base'})); break;
+      case 'modified-desc': sorted.sort((a,b)=> b.modifiedAt - a.modifiedAt); break;
+      case 'modified-asc': sorted.sort((a,b)=> a.modifiedAt - b.modifiedAt); break;
+      case 'date-asc':
+      default: sorted.sort((a,b)=> a.takenAt - b.takenAt); break;
+    }
+    return sorted;
   }
 
   function renderSkeletons(n){
@@ -535,6 +603,12 @@
     updateLightbox();
   }
 
+  els.sortSelect.addEventListener('change', ()=>{
+    currentSort = els.sortSelect.value;
+    photos = sortPhotos(photos, currentSort);
+    renderGrid();
+  });
+
   els.lbPrev.addEventListener('click', ()=> navLightbox(-1));
   els.lbNext.addEventListener('click', ()=> navLightbox(1));
   els.lbClose.addEventListener('click', closeLightbox);
@@ -578,9 +652,14 @@
     renderSkeletons(10);
 
     try {
-      const files = await fetchFolder(folderId, key);
-      photos = buildPhotoObjects(files);
-      els.galleryTitle.textContent = 'Delivered Frames';
+      const [folderName, files] = await Promise.all([
+        fetchFolderName(folderId, key),
+        fetchFolder(folderId, key)
+      ]);
+      currentSort = 'date-asc';
+      els.sortSelect.value = currentSort;
+      photos = sortPhotos(buildPhotoObjects(files), currentSort);
+      els.galleryTitle.textContent = folderName || 'Delivered Frames';
       els.photoCount.innerHTML = `<b>${photos.length}</b> frames`;
       els.metaRow.style.display = 'flex';
       els.downloadAllBtn.disabled = photos.length === 0;
