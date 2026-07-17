@@ -276,7 +276,7 @@
     <div class="brand"><span class="mark">◆</span><span class="name">LuxSync v3</span></div>
     <div class="meta-row" id="metaRow" style="display:none;">
       <span class="mono" id="photoCount">— frames</span>
-      <button class="btn" id="changeBtn">New Link</button>
+      <button class="btn" id="shareBtn">Share</button>
       <button class="btn primary" id="downloadAllBtn">Download All</button>
     </div>
   </div>
@@ -365,6 +365,8 @@
   let photos = [];        // { id, name, thumb, full, downloadUrl, takenAt, modifiedAt }
   let currentIndex = -1;
   let currentSort = 'date-asc';
+  let currentFolderId = null;
+  let pendingSort = null;
 
   const els = {
     setup: document.getElementById('setup'),
@@ -377,7 +379,7 @@
     apiKeyStatus: document.getElementById('apiKeyStatus'),
     metaRow: document.getElementById('metaRow'),
     photoCount: document.getElementById('photoCount'),
-    changeBtn: document.getElementById('changeBtn'),
+    shareBtn: document.getElementById('shareBtn'),
     downloadAllBtn: document.getElementById('downloadAllBtn'),
     galleryHead: document.getElementById('galleryHead'),
     galleryTitle: document.getElementById('galleryTitle'),
@@ -707,7 +709,9 @@
         fetchFolderName(folderId, key),
         fetchFolder(folderId, key)
       ]);
-      currentSort = 'date-asc';
+      currentFolderId = folderId;
+      currentSort = pendingSort || 'date-asc';
+      pendingSort = null;
       els.sortSelect.value = currentSort;
       photos = sortPhotos(buildPhotoObjects(files), currentSort);
       els.galleryTitle.textContent = folderName || 'Delivered Frames';
@@ -726,17 +730,38 @@
     }
   });
 
-  els.changeBtn.addEventListener('click', ()=>{
-    photos = [];
-    els.grid.innerHTML = '';
-    els.grid.style.display = 'none';
-    els.galleryHead.style.display = 'none';
-    els.metaRow.style.display = 'none';
-    els.setup.style.display = 'flex';
-    clearError();
+  els.shareBtn.addEventListener('click', async ()=>{
+    if(!currentFolderId) return;
+    const url = new URL(location.href);
+    url.search = '';
+    url.searchParams.set('folder', currentFolderId);
+    url.searchParams.set('sort', currentSort);
+    const shareUrl = url.toString();
+    const original = els.shareBtn.textContent;
+    try {
+      await navigator.clipboard.writeText(shareUrl);
+      els.shareBtn.textContent = 'Link copied!';
+    } catch(err){
+      window.prompt('Copy this link:', shareUrl);
+    } finally {
+      setTimeout(()=>{ els.shareBtn.textContent = original; }, 1800);
+    }
   });
 
   els.downloadAllBtn.addEventListener('click', downloadAll);
+
+  // ---------- auto-load from a shared link ----------
+  (function initFromUrl(){
+    const params = new URLSearchParams(location.search);
+    const folderParam = params.get('folder');
+    if(!folderParam) return;
+    els.folderUrl.value = folderParam;
+    const sortParam = params.get('sort');
+    if(sortParam) pendingSort = sortParam;
+    if(els.apiKey.value.trim()){
+      els.setupForm.requestSubmit();
+    }
+  })();
 
 })();
 </script>
