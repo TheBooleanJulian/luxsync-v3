@@ -153,18 +153,16 @@
   .sort-select option{background:var(--panel); color:var(--ink);}
 
   .grid{
-    display:grid; grid-template-columns:repeat(1,1fr); gap:14px; align-items:start;
+    position:relative;
   }
-  @media(min-width:640px){.grid{grid-template-columns:repeat(2,1fr);}}
-  @media(min-width:980px){.grid{grid-template-columns:repeat(3,1fr);}}
-  @media(min-width:1320px){.grid{grid-template-columns:repeat(4,1fr);}}
 
   .frame{
-    position:relative;
+    position:absolute; top:0; left:0;
     border:1px solid var(--line); background:var(--panel);
     cursor:pointer; overflow:hidden; border-radius:2px;
     opacity:0; transform:translateY(16px);
-    transition:opacity 0.55s ease, transform 0.55s ease, border-color 0.2s ease;
+    transition:opacity 0.55s ease, transform 0.55s ease, border-color 0.2s ease,
+               left 0.25s ease, top 0.25s ease, width 0.25s ease;
   }
   .frame.in{opacity:1; transform:translateY(0);}
   .frame:hover{border-color:var(--line-strong);}
@@ -197,7 +195,7 @@
   .frame .dl:hover svg{stroke:var(--teal);}
 
   .skeleton{
-    border-radius:2px;
+    position:absolute; top:0; left:0; border-radius:2px;
     background:linear-gradient(100deg, var(--panel) 30%, var(--panel-raised) 45%, var(--panel) 60%);
     background-size:300% 100%;
     animation:shimmer 1.6s ease-in-out infinite;
@@ -467,6 +465,14 @@
     return isNaN(d) ? null : d;
   }
 
+  function getAspect(f){
+    const meta = f.imageMediaMetadata;
+    if(!meta || !meta.width || !meta.height) return 0.75;
+    let w = meta.width, h = meta.height;
+    if(meta.rotation === 1 || meta.rotation === 3){ const t = w; w = h; h = t; }
+    return h / w;
+  }
+
   function buildPhotoObjects(files){
     return files.map(f => {
       const takenAt = parseExifTime(f.imageMediaMetadata && f.imageMediaMetadata.time) || new Date(f.createdTime);
@@ -478,7 +484,8 @@
         full: `https://drive.google.com/thumbnail?id=${f.id}&sz=w2200`,
         downloadUrl: `https://drive.google.com/uc?export=download&id=${f.id}`,
         takenAt,
-        modifiedAt
+        modifiedAt,
+        aspect: getAspect(f)
       };
     });
   }
@@ -497,15 +504,55 @@
     return sorted;
   }
 
+  // ---------- masonry layout ----------
+  const GRID_GAP = 14;
+  let relayout = null;
+
+  function getColumnCount(width){
+    if(width >= 1320) return 4;
+    if(width >= 980) return 3;
+    if(width >= 640) return 2;
+    return 1;
+  }
+
+  function applyMasonryLayout(items, getHeight){
+    const containerWidth = els.grid.clientWidth;
+    if(containerWidth === 0 || items.length === 0) return;
+    const cols = getColumnCount(containerWidth);
+    const colWidth = (containerWidth - GRID_GAP * (cols - 1)) / cols;
+    const colHeights = new Array(cols).fill(0);
+    items.forEach((el, i)=>{
+      const h = getHeight(el, i, colWidth);
+      let col = 0;
+      for(let c=1;c<cols;c++){ if(colHeights[c] < colHeights[col]) col = c; }
+      const x = col * (colWidth + GRID_GAP);
+      const y = colHeights[col];
+      el.style.width = colWidth + 'px';
+      el.style.left = x + 'px';
+      el.style.top = y + 'px';
+      colHeights[col] = y + h + GRID_GAP;
+    });
+    els.grid.style.height = (Math.max(...colHeights) - GRID_GAP) + 'px';
+  }
+
+  let resizeTimer = null;
+  window.addEventListener('resize', ()=>{
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(()=>{ if(relayout) relayout(); }, 120);
+  });
+
   function renderSkeletons(n){
     els.grid.innerHTML = '';
     const heights = [220,300,260,340,240,280];
+    const skeletons = [];
     for(let i=0;i<n;i++){
       const sk = document.createElement('div');
       sk.className = 'skeleton';
-      sk.style.height = heights[i % heights.length] + 'px';
+      skeletons.push(sk);
       els.grid.appendChild(sk);
     }
+    relayout = ()=> applyMasonryLayout(skeletons, (el,i)=> heights[i % heights.length]);
+    relayout();
   }
 
   const observer = new IntersectionObserver((entries)=>{
@@ -525,9 +572,9 @@
       return;
     }
     els.emptyState.style.display = 'none';
-    els.grid.style.display = 'grid';
+    els.grid.style.display = 'block';
 
-    photos.forEach((p, idx)=>{
+    const frames = photos.map((p, idx)=>{
       const frame = document.createElement('div');
       frame.className = 'frame';
       frame.dataset.index = idx;
@@ -553,7 +600,11 @@
 
       els.grid.appendChild(frame);
       observer.observe(frame);
+      return frame;
     });
+
+    relayout = ()=> applyMasonryLayout(frames, (el,i,colWidth)=> colWidth * photos[Number(el.dataset.index)].aspect);
+    relayout();
   }
 
   function triggerDownload(p){
@@ -648,7 +699,7 @@
     els.setup.style.display = 'none';
     els.galleryHead.style.display = 'block';
     els.galleryTitle.textContent = 'Loading gallery…';
-    els.grid.style.display = 'grid';
+    els.grid.style.display = 'block';
     renderSkeletons(10);
 
     try {
