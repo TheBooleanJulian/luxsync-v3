@@ -282,7 +282,7 @@
         <input type="text" id="folderUrl" placeholder="https://drive.google.com/drive/folders/…" autocomplete="off">
         <div class="hint">Folder sharing must be set to <b style="color:var(--ink-dim);">Anyone with the link — Viewer</b>.</div>
       </div>
-      <div class="field">
+      <div class="field" id="apiKeyField">
         <label for="apiKey">Google Drive API key</label>
         <input type="password" id="apiKey" placeholder="AIza…" autocomplete="off">
         <div class="hint">Create one free in <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener">Google Cloud Console</a> with the Drive API enabled. Stored in this tab only — never sent anywhere but Google.</div>
@@ -344,6 +344,7 @@
     setupForm: document.getElementById('setupForm'),
     setupError: document.getElementById('setupError'),
     folderUrl: document.getElementById('folderUrl'),
+    apiKeyField: document.getElementById('apiKeyField'),
     apiKey: document.getElementById('apiKey'),
     metaRow: document.getElementById('metaRow'),
     photoCount: document.getElementById('photoCount'),
@@ -362,8 +363,13 @@
     lbDownload: document.getElementById('lbDownload'),
   };
 
-  // local dev convenience: prefill from config.js (gitignored, see config.example.js)
-  if(window.LUXSYNC_API_KEY) els.apiKey.value = window.LUXSYNC_API_KEY;
+  // key is supplied by config.js (local dev, see config.example.js) or baked in at
+  // deploy time from the LUXSYNC_API_KEY env var (see zbpack.json) — when present,
+  // there's nothing for the visitor to enter.
+  if(window.LUXSYNC_API_KEY){
+    els.apiKey.value = window.LUXSYNC_API_KEY;
+    els.apiKeyField.style.display = 'none';
+  }
 
   function extractFolderId(url){
     const patterns = [
@@ -547,7 +553,8 @@
     clearError();
     const rawUrl = els.folderUrl.value.trim();
     const key = els.apiKey.value.trim();
-    if(!rawUrl || !key){ showError('Enter both the folder link and an API key.'); return; }
+    if(!rawUrl){ showError('Enter the folder link.'); return; }
+    if(!key){ showError('Enter both the folder link and an API key.'); return; }
     const folderId = extractFolderId(rawUrl);
     if(!folderId){ showError('Could not read a folder ID from that link. Paste the full Drive folder URL.'); return; }
 
