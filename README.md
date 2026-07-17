@@ -42,10 +42,10 @@ mechanism — but you can get the same effect with a gitignored local config fil
 cp config.example.js config.js
 ```
 
-Edit `config.js` and set `window.LUXSYNC_API_KEY` to your key. `index.html` (and
-`luxsync-v3.html`) load this file automatically and pre-fill the setup form's API
-key field with it, so you don't have to find and paste the key every time during
-local dev. `config.js` is in `.gitignore` and is never committed or deployed — it's
+Edit `config.js` and set `window.LUXSYNC_API_KEY` to your key. `index.html` loads
+this file automatically and pre-fills the setup form's API key field with it, so
+you don't have to find and paste the key every time during local dev. `config.js`
+is in `.gitignore` and is never committed or deployed — it's
 purely a local convenience. Clients using the deployed gallery still paste their
 own key into the form as before (see "Known limitations" below).
 
