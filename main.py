@@ -128,9 +128,11 @@ async def proxy_public_image(file_id: str, size_param: str, cache_prefix: str) -
         raise HTTPException(404, "Image not found or folder is no longer public")
 
     content_type = res.headers.get("content-type", "image/jpeg")
-    cache.put_bytes(cache_key, res.content, content_type)
+    cached_ok = cache.put_bytes(cache_key, res.content, content_type)
 
-    if CDN_BASE_URL:
+    # Only redirect to the CDN if the upload actually succeeded — redirecting
+    # to an object that was never written would just 404 at Cloudflare/B2.
+    if CDN_BASE_URL and cached_ok:
         return _cdn_redirect(cache_key)
     return Response(content=res.content, media_type=content_type,
                      headers={"Cache-Control": "public, max-age=2592000, immutable"})

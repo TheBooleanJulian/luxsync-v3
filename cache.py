@@ -7,12 +7,14 @@ persistent caching) — useful for local dev without a bucket configured.
 """
 
 import json
+import logging
 import os
 import time
 
 import boto3
 from botocore.config import Config
-from botocore.exceptions import ClientError
+
+log = logging.getLogger("cache")
 
 BUCKET = os.environ.get("S3_BUCKET", "")
 
@@ -39,18 +41,26 @@ def get_json(key: str, max_age_seconds: float):
     try:
         obj = _s3().get_object(Bucket=BUCKET, Key=key)
         wrapper = json.loads(obj["Body"].read())
-    except ClientError:
+    except Exception:
+        log.warning("cache get_json miss/error for key=%s", key, exc_info=True)
         return None
     if time.time() - wrapper.get("_cachedAt", 0) > max_age_seconds:
         return None
     return wrapper.get("data")
 
 
-def put_json(key: str, data) -> None:
+def put_json(key: str, data) -> bool:
+    """Returns True on success. Never raises — a cache write failure should
+    not take down the request that already has the data to return."""
     if not BUCKET:
-        return
-    payload = json.dumps({"_cachedAt": time.time(), "data": data}).encode("utf-8")
-    _s3().put_object(Bucket=BUCKET, Key=key, Body=payload, ContentType="application/json")
+        return False
+    try:
+        payload = json.dumps({"_cachedAt": time.time(), "data": data}).encode("utf-8")
+        _s3().put_object(Bucket=BUCKET, Key=key, Body=payload, ContentType="application/json")
+        return True
+    except Exception:
+        log.error("cache put_json FAILED for key=%s (check S3_* env vars)", key, exc_info=True)
+        return False
 
 
 def exists(key: str) -> bool:
@@ -59,7 +69,7 @@ def exists(key: str) -> bool:
     try:
         _s3().head_object(Bucket=BUCKET, Key=key)
         return True
-    except ClientError:
+    except Exception:
         return False
 
 
@@ -69,11 +79,17 @@ def get_bytes(key: str):
     try:
         obj = _s3().get_object(Bucket=BUCKET, Key=key)
         return obj["Body"].read(), obj.get("ContentType", "application/octet-stream")
-    except ClientError:
+    except Exception:
         return None
 
 
-def put_bytes(key: str, data: bytes, content_type: str) -> None:
+def put_bytes(key: str, data: bytes, content_type: str) -> bool:
+    """Returns True on success. Never raises — see put_json."""
     if not BUCKET:
-        return
-    _s3().put_object(Bucket=BUCKET, Key=key, Body=data, ContentType=content_type)
+        return False
+    try:
+        _s3().put_object(Bucket=BUCKET, Key=key, Body=data, ContentType=content_type)
+        return True
+    except Exception:
+        log.error("cache put_bytes FAILED for key=%s (check S3_* env vars)", key, exc_info=True)
+        return False
