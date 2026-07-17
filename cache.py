@@ -7,14 +7,24 @@ persistent caching) — useful for local dev without a bucket configured.
 """
 
 import json
-import logging
 import os
+import sys
 import time
+import traceback
 
 import boto3
 from botocore.config import Config
 
-log = logging.getLogger("cache")
+
+def _log(msg: str, exc: bool = False) -> None:
+    # Plain print to stdout instead of the logging module — uvicorn's own
+    # logging setup can swallow messages from other loggers depending on
+    # config, and this needs to be unmissable in the Zeabur log stream.
+    print(f"[cache] {msg}", file=sys.stdout, flush=True)
+    if exc:
+        traceback.print_exc(file=sys.stdout)
+        sys.stdout.flush()
+
 
 BUCKET = os.environ.get("S3_BUCKET", "")
 
@@ -41,8 +51,8 @@ def get_json(key: str, max_age_seconds: float):
     try:
         obj = _s3().get_object(Bucket=BUCKET, Key=key)
         wrapper = json.loads(obj["Body"].read())
-    except Exception:
-        log.warning("cache get_json miss/error for key=%s", key, exc_info=True)
+    except Exception as e:
+        _log(f"get_json miss/error for key={key}: {e!r}")
         return None
     if time.time() - wrapper.get("_cachedAt", 0) > max_age_seconds:
         return None
@@ -53,13 +63,15 @@ def put_json(key: str, data) -> bool:
     """Returns True on success. Never raises — a cache write failure should
     not take down the request that already has the data to return."""
     if not BUCKET:
+        _log(f"put_json SKIPPED for key={key}: S3_BUCKET is not set")
         return False
     try:
         payload = json.dumps({"_cachedAt": time.time(), "data": data}).encode("utf-8")
         _s3().put_object(Bucket=BUCKET, Key=key, Body=payload, ContentType="application/json")
+        _log(f"put_json OK for key={key} bucket={BUCKET}")
         return True
-    except Exception:
-        log.error("cache put_json FAILED for key=%s (check S3_* env vars)", key, exc_info=True)
+    except Exception as e:
+        _log(f"put_json FAILED for key={key} bucket={BUCKET}: {e!r} (check S3_* env vars)", exc=True)
         return False
 
 
@@ -68,8 +80,10 @@ def exists(key: str) -> bool:
         return False
     try:
         _s3().head_object(Bucket=BUCKET, Key=key)
+        _log(f"exists=True for key={key}")
         return True
-    except Exception:
+    except Exception as e:
+        _log(f"exists=False for key={key}: {e!r}")
         return False
 
 
@@ -79,17 +93,20 @@ def get_bytes(key: str):
     try:
         obj = _s3().get_object(Bucket=BUCKET, Key=key)
         return obj["Body"].read(), obj.get("ContentType", "application/octet-stream")
-    except Exception:
+    except Exception as e:
+        _log(f"get_bytes miss/error for key={key}: {e!r}")
         return None
 
 
 def put_bytes(key: str, data: bytes, content_type: str) -> bool:
     """Returns True on success. Never raises — see put_json."""
     if not BUCKET:
+        _log(f"put_bytes SKIPPED for key={key}: S3_BUCKET is not set")
         return False
     try:
         _s3().put_object(Bucket=BUCKET, Key=key, Body=data, ContentType=content_type)
+        _log(f"put_bytes OK for key={key} bucket={BUCKET} ({len(data)} bytes)")
         return True
-    except Exception:
-        log.error("cache put_bytes FAILED for key=%s (check S3_* env vars)", key, exc_info=True)
+    except Exception as e:
+        _log(f"put_bytes FAILED for key={key} bucket={BUCKET}: {e!r} (check S3_* env vars)", exc=True)
         return False
