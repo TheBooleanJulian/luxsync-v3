@@ -35,14 +35,13 @@ python3 -m http.server 8080
 
 ## Deploy — GitHub → Zeabur
 
-1. Push this repo to GitHub:
+1. This repo is already on GitHub at
+   [TheBooleanJulian/luxsync-v3](https://github.com/TheBooleanJulian/luxsync-v3). Push changes
+   with:
    ```bash
-   git init
    git add .
-   git commit -m "LuxSync v3 — initial commit"
-   git branch -M main
-   git remote add origin https://github.com/<you>/luxsync-v3.git
-   git push -u origin main
+   git commit -m "..."
+   git push origin main
    ```
 2. In [Zeabur](https://zeabur.com): **New Project → Deploy from GitHub** → select this repo.
 3. Zeabur auto-detects it as a static site (root `index.html`). No environment variables are
@@ -69,13 +68,10 @@ for a staging preview if you want to test layout changes before clients see them
 - **No caching.** Every visit re-queries the Drive API live. Fine for typical gallery sizes;
   for very large folders (1000+ files) initial load will take a few seconds longer.
 
-## Roadmap if you want to go further
+## Roadmap
 
-A FastAPI backend (matching your usual stack) would let you:
+A FastAPI backend (matching your usual stack):
 - Keep the Drive API key server-side instead of in the browser.
 - Serve a real zipped download by streaming image bytes through your own server.
 - Give each client a slug/subdomain with cached thumbnails and custom branding.
 - Add basic auth or an access-code gate per gallery.
-
-Say the word and this can be built as `luxsync-v3-service` with the same
-FastAPI + Docker + Zeabur pattern as the rest of the fleet.
