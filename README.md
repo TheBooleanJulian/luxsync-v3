@@ -138,7 +138,7 @@ Ops & delivery
 
 Summarised from commit history, most recent first. Versions follow `0.MINOR.PATCH` — MINOR for new features/architecture changes, PATCH for fixes.
 
-- **v0.5.0 — 2026-07-31 (licensing)** — Dual licensed the project under AGPLv3 + a commercial license (previously MIT); added `LICENSE` (AGPLv3), `COMMERCIAL-LICENSE.md`, `COMMERCIAL-LICENSE-AGREEMENT-TEMPLATE.md`, and `NOTICE`.
+- **v0.5.0 — 2026-07-31 (licensing + docs)** — Dual licensed the project under AGPLv3 + a commercial license (previously MIT); added `LICENSE` (AGPLv3), `COMMERCIAL-LICENSE.md`, `COMMERCIAL-LICENSE-AGREEMENT-TEMPLATE.md`, and `NOTICE`. Added `.env.example` and fixed the Configuration table, which documented a nonexistent `S3_BUCKET_NAME` instead of the actual `S3_BUCKET`/`S3_REGION` vars read in `cache.py`. Reworked the changelog to carry semver version numbers and expanded the roadmap section.
 - **v0.4.1 — 2026-07-18 (cache stability)** — Dropped all S3 existence pre-checks (`exists()` and ranged `GetObject`) after both produced false positives against B2 on empty buckets; plain `GetObject` is now the only check. Cache write failures now log loudly without crashing the request; switched diagnostics to `print()` for reliable visibility in Zeabur logs.
 - **v0.4.0 — 2026-07-17 (zip download + CDN)** — Added multi-select zip download (streaming via `stream-zip`, zero memory buffering) and Cloudflare-fronted B2/R2 CDN redirect for cache-hit image requests.
 - **v0.3.0 — 2026-07-17 (backend)** — Moved Drive API key server-side behind a full FastAPI backend with httpx proxying, per-IP rate limiting via `slowapi`, and S3-compatible image caching (B2 / R2).
