@@ -257,7 +257,11 @@
   }
   .lb-bar .mono{font-size:12px; color:var(--ink-dim); letter-spacing:0.06em;}
   .lb-bar .mono b{color:var(--gold);}
-  .lb-actions{display:flex; gap:10px;}
+  .lb-info{min-width:0;}
+  .lb-filename{font-size:13px; color:var(--ink); margin-bottom:4px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+  .lb-meta{display:flex; align-items:center; gap:10px; flex-wrap:wrap;}
+  .lb-exif:not(:empty)::before{content:"·"; margin-right:10px; color:var(--ink-faint);}
+  .lb-actions{display:flex; gap:10px; flex-shrink:0;}
   .lb-close{
     position:absolute; top:18px; right:clamp(20px,4vw,56px);
     background:transparent; border:none; color:var(--ink-dim); cursor:pointer; z-index:5;
@@ -275,6 +279,32 @@
   ::-webkit-scrollbar{width:9px;} ::-webkit-scrollbar-track{background:var(--void);}
   ::-webkit-scrollbar-thumb{background:var(--panel-raised); border:2px solid var(--void); border-radius:5px;}
   ::-webkit-scrollbar-thumb:hover{background:var(--line-strong);}
+
+  /* ---------- review toast ---------- */
+  .review-toast{
+    position:fixed; right:clamp(16px,3vw,32px); bottom:clamp(16px,3vw,32px);
+    z-index:200; width:min(320px, calc(100vw - 32px));
+    background:var(--panel-raised); border:1px solid var(--line-strong);
+    border-radius:2px; padding:18px 34px 18px 18px;
+    box-shadow:0 20px 50px rgba(0,0,0,0.5);
+    opacity:0; transform:translateY(12px);
+    pointer-events:none;
+    transition:opacity 0.3s ease, transform 0.3s ease;
+  }
+  .review-toast.show{opacity:1; transform:translateY(0); pointer-events:auto;}
+  .review-toast p{font-size:12.5px; line-height:1.55; color:var(--ink-dim); margin-bottom:12px;}
+  .review-toast a{
+    display:inline-block; font-family:'JetBrains Mono',monospace; font-size:11.5px;
+    letter-spacing:0.04em; color:var(--gold); text-decoration:none;
+  }
+  .review-toast a:hover{text-decoration:underline;}
+  .review-toast-close{
+    position:absolute; top:10px; right:10px;
+    background:transparent; border:none; color:var(--ink-faint); cursor:pointer;
+    padding:4px;
+  }
+  .review-toast-close:hover{color:var(--teal);}
+  .review-toast-close svg{width:14px; height:14px; stroke:currentColor;}
 
   @media(prefers-reduced-motion:reduce){
     *{animation-duration:0.01ms !important; transition-duration:0.01ms !important;}
@@ -322,7 +352,7 @@
         <h2 id="galleryTitle">Gallery</h2>
       </div>
       <div style="display:flex; align-items:center; gap:10px;">
-        <button class="btn" id="colsToggleBtn">5 Col</button>
+        <button class="btn" id="colsToggleBtn">View 5 Columns</button>
         <select class="sort-select" id="sortSelect">
           <option value="date-asc">Date taken (oldest first)</option>
           <option value="date-desc">Date taken (newest first)</option>
@@ -333,6 +363,7 @@
         </select>
       </div>
     </div>
+    <div class="mono" style="font-size:11.5px; color:var(--ink-faint); letter-spacing:0.04em; margin-top:14px;">Hover over a photo and click the circle in the top-right corner to select it for a zipped download.</div>
   </section>
 
   <div class="grid" id="grid" style="display:none;"></div>
@@ -348,6 +379,13 @@
   <span class="mono">Built for delivery, not decoration</span>
 </footer>
 
+<!-- Review prompt toast -->
+<div class="review-toast" id="reviewToast">
+  <button class="review-toast-close" id="reviewToastClose" aria-label="Dismiss"><svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round"><line x1="5" y1="5" x2="19" y2="19"/><line x1="19" y1="5" x2="5" y2="19"/></svg></button>
+  <p>If you enjoyed working with me, I'd really appreciate a quick Google review. It helps others discover my Accurova photography services and only takes about a minute.</p>
+  <a href="https://maps.app.goo.gl/JzfsHqPG3uGUjCFB6" target="_blank" rel="noopener">⭐ Leave a Google review</a>
+</div>
+
 <!-- Lightbox -->
 <div class="lightbox" id="lightbox">
   <button class="lb-close" id="lbClose"><svg viewBox="0 0 24 24" fill="none" stroke-width="1.6" stroke-linecap="round"><line x1="5" y1="5" x2="19" y2="19"/><line x1="19" y1="5" x2="5" y2="19"/></svg></button>
@@ -357,7 +395,13 @@
     <button class="lb-nav next" id="lbNext"><svg viewBox="0 0 24 24" fill="none" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg></button>
   </div>
   <div class="lb-bar">
-    <span class="mono" id="lbCounter"><b>01</b> / 24</span>
+    <div class="lb-info">
+      <div class="lb-filename mono" id="lbFilename"></div>
+      <div class="lb-meta">
+        <span class="mono" id="lbCounter"><b>01</b> / 24</span>
+        <span class="mono" id="lbExif"></span>
+      </div>
+    </div>
     <div class="lb-actions">
       <button class="btn" id="lbDownload">Download</button>
     </div>
@@ -402,9 +446,25 @@
     lbPrev: document.getElementById('lbPrev'),
     lbNext: document.getElementById('lbNext'),
     lbClose: document.getElementById('lbClose'),
+    lbFilename: document.getElementById('lbFilename'),
     lbCounter: document.getElementById('lbCounter'),
+    lbExif: document.getElementById('lbExif'),
     lbDownload: document.getElementById('lbDownload'),
+    reviewToast: document.getElementById('reviewToast'),
+    reviewToastClose: document.getElementById('reviewToastClose'),
   };
+
+  // ---------- review prompt toast ----------
+  let reviewToastTimer = null;
+  function showReviewToast(){
+    clearTimeout(reviewToastTimer);
+    reviewToastTimer = setTimeout(()=>{ els.reviewToast.classList.add('show'); }, 1200);
+  }
+  function hideReviewToast(){
+    clearTimeout(reviewToastTimer);
+    els.reviewToast.classList.remove('show');
+  }
+  els.reviewToastClose.addEventListener('click', hideReviewToast);
 
   function extractFolderId(url){
     const patterns = [
@@ -463,7 +523,10 @@
         downloadUrl: `/api/download/${f.id}?name=${encodeURIComponent(f.name)}`,
         takenAt,
         modifiedAt,
-        aspect: getAspect(f)
+        aspect: getAspect(f),
+        exif: f.imageMediaMetadata || null,
+        width: f.imageMediaMetadata && f.imageMediaMetadata.width,
+        height: f.imageMediaMetadata && f.imageMediaMetadata.height
       };
     });
   }
@@ -487,7 +550,7 @@
   let relayout = null;
 
   function getColumnCount(width){
-    if(width >= 640) return Math.min(maxCols, Math.max(1, Math.round(width / 300)));
+    if(width >= 640) return maxCols;
     if(width >= 480) return 2;
     return 1;
   }
@@ -600,6 +663,7 @@
     document.body.appendChild(a);
     a.click();
     a.remove();
+    showReviewToast();
   }
 
   // ---------- selection + zip download ----------
@@ -629,6 +693,7 @@
     document.body.appendChild(form);
     form.submit();
     form.remove();
+    showReviewToast();
   }
 
   function downloadSelected(){
@@ -638,16 +703,44 @@
     else downloadAsZip(selected);
   }
 
+  const MAX_ZIP_FILES = 200;
+
   async function downloadAll(){
+    if(photos.length === 0) return;
     els.downloadAllBtn.disabled = true;
     const original = els.downloadAllBtn.textContent;
-    for(let i=0;i<photos.length;i++){
-      els.downloadAllBtn.textContent = `Downloading ${i+1}/${photos.length}`;
-      triggerDownload(photos[i]);
-      await new Promise(r=>setTimeout(r, 350));
+
+    if(photos.length <= MAX_ZIP_FILES){
+      els.downloadAllBtn.textContent = 'Zipping…';
+      downloadAsZip(photos);
+    } else {
+      const chunks = Math.ceil(photos.length / MAX_ZIP_FILES);
+      for(let i=0;i<chunks;i++){
+        els.downloadAllBtn.textContent = `Zipping ${i+1}/${chunks}`;
+        downloadAsZip(photos.slice(i * MAX_ZIP_FILES, (i+1) * MAX_ZIP_FILES));
+        await new Promise(r=>setTimeout(r, 600));
+      }
     }
+
     els.downloadAllBtn.textContent = original;
     els.downloadAllBtn.disabled = false;
+  }
+
+  function formatExif(p){
+    const parts = [];
+    if(p.width && p.height) parts.push(`${p.width}×${p.height}`);
+    const e = p.exif;
+    if(e){
+      const camera = [e.cameraMake, e.cameraModel].filter(Boolean).join(' ');
+      if(camera) parts.push(camera);
+      if(e.focalLength) parts.push(`${e.focalLength}mm`);
+      if(e.aperture) parts.push(`f/${e.aperture}`);
+      if(e.exposureTime){
+        parts.push(e.exposureTime >= 1 ? `${e.exposureTime}s` : `1/${Math.round(1/e.exposureTime)}s`);
+      }
+      if(e.isoSpeed) parts.push(`ISO ${e.isoSpeed}`);
+    }
+    return parts.join(' · ');
   }
 
   // ---------- lightbox ----------
@@ -667,7 +760,9 @@
     const tmp = new Image();
     tmp.onload = ()=>{ els.lbImg.src = p.full; els.lbImg.classList.add('loaded'); };
     tmp.src = p.full;
+    els.lbFilename.textContent = p.name;
     els.lbCounter.innerHTML = `<b>${String(currentIndex+1).padStart(2,'0')}</b> / ${photos.length}`;
+    els.lbExif.textContent = formatExif(p);
   }
   function navLightbox(dir){
     currentIndex = (currentIndex + dir + photos.length) % photos.length;
@@ -676,7 +771,7 @@
 
   els.colsToggleBtn.addEventListener('click', ()=>{
     maxCols = maxCols === 3 ? 5 : 3;
-    els.colsToggleBtn.textContent = maxCols === 3 ? '5 Col' : '3 Col';
+    els.colsToggleBtn.textContent = maxCols === 3 ? 'View 5 Columns' : 'View 3 Columns';
     if(relayout) relayout();
   });
 
