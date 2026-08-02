@@ -21,6 +21,7 @@ from stat import S_IFREG
 
 from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import FileResponse, RedirectResponse, Response, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -229,6 +230,11 @@ async def download_zip(
         media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="{zip_filename}"'},
     )
+
+
+# Logo/favicon assets only — not the whole repo (which would expose
+# main.py, cache.py, etc.).
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
 
 # The frontend is a single self-contained file — serve it directly rather

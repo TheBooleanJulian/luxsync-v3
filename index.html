@@ -4,6 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Accurova LuxSync — Gallery</title>
+<link rel="icon" type="image/png" href="/static/logo-mark.png">
+<link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
@@ -67,8 +69,8 @@
     display:flex; align-items:center; justify-content:space-between; gap:20px;
     flex-wrap:wrap;
   }
-  .brand{display:flex; align-items:baseline; gap:10px;}
-  .brand .mark{color:var(--teal); font-size:20px; letter-spacing:0.02em; font-weight:700;}
+  .brand{display:flex; align-items:center; gap:10px;}
+  .brand .mark{width:26px; height:26px; display:block;}
   .brand .name{font-size:15px; color:var(--ink-dim); letter-spacing:0.08em; text-transform:uppercase;}
   .meta-row{display:flex; align-items:center; gap:18px; font-size:12px;}
   .meta-row .mono{color:var(--ink-dim); letter-spacing:0.04em;}
@@ -331,7 +333,7 @@
 
 <header class="top">
   <div class="top-inner">
-    <div class="brand"><span class="mark">◆</span><span class="name">Accurova LuxSync</span></div>
+    <div class="brand"><img class="mark" src="/static/logo-mark.png" alt="LuxSync"><span class="name">Accurova LuxSync</span></div>
     <div class="meta-row" id="metaRow" style="display:none;">
       <span class="mono" id="photoCount">— frames</span>
       <button class="btn" id="downloadSelectedBtn" disabled>Download Selected</button>
