@@ -1,14 +1,16 @@
 """LuxSync v3 backend.
 
-Keeps the Google Drive API key server-side only. The browser never sees it —
-it calls these endpoints instead, which proxy and cache Drive so that:
-  - `files.list` / `files.get` (the only calls that actually spend Drive API
-    quota) are cached per folder for FOLDER_CACHE_TTL_SECONDS.
-  - Thumbnails/full images are fetched from Drive's public (keyless)
-    thumbnail endpoint once, then cached in S3-compatible object storage
-    (Cloudflare R2 / Backblaze B2) so repeat visits never touch Drive again.
+Keeps every gallery source's API credentials server-side only — the browser
+never sees them. It calls these provider-agnostic endpoints instead, which
+dispatch to a provider module (providers/drive.py, providers/dropbox_provider.py,
+...) so that:
+  - Folder/file listing (the only calls that spend API quota) is cached per
+    source for FOLDER_CACHE_TTL_SECONDS.
+  - Thumbnails/full images are fetched from the source once, then cached in
+    S3-compatible object storage (Cloudflare R2 / Backblaze B2) so repeat
+    visits never touch the source again.
   - Downloads are streamed through this server rather than linking straight
-    to drive.google.com, so everything is rate-limited per IP in one place.
+    to the source, so everything is rate-limited per IP in one place.
 """
 
 import json
@@ -17,19 +19,21 @@ import re
 from datetime import datetime
 from stat import S_IFREG
 
-import httpx
 from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import FileResponse, RedirectResponse, Response, StreamingResponse
+from pydantic import BaseModel
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 from stream_zip import ZIP_32, async_stream_zip
 
 import cache
+import providers.drive as drive_provider
+import providers.dropbox_provider as dropbox_provider
 
-DRIVE_API_KEY = os.environ.get("DRIVE_API_KEY", "")
+PROVIDERS = {"drive": drive_provider, "dropbox": dropbox_provider}
+
 FOLDER_CACHE_TTL = int(os.environ.get("FOLDER_CACHE_TTL_SECONDS", "600"))
-DRIVE_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{10,}$")
 
 # Cloudflare-fronted Backblaze B2 (or R2) base URL, e.g.
 # "https://cdn.example.com/file/luxsync-cache" — when set, cached
@@ -46,66 +50,63 @@ app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 
-def validate_drive_id(drive_id: str) -> None:
-    if not DRIVE_ID_RE.match(drive_id):
-        raise HTTPException(400, "Invalid ID")
+def _get_provider(name: str):
+    provider = PROVIDERS.get(name)
+    if provider is None:
+        raise HTTPException(400, "Unknown provider")
+    return provider
 
 
-async def drive_get(path: str, params: dict) -> dict:
-    if not DRIVE_API_KEY:
-        raise HTTPException(500, "Server is missing DRIVE_API_KEY")
-    async with httpx.AsyncClient(timeout=20) as client:
-        res = await client.get(
-            f"https://www.googleapis.com/drive/v3/{path}",
-            params={**params, "key": DRIVE_API_KEY},
-        )
-    if res.status_code != 200:
-        try:
-            detail = res.json().get("error", {}).get("message", "Drive API request failed")
-        except ValueError:
-            detail = "Drive API request failed"
-        raise HTTPException(res.status_code if res.status_code < 500 else 502, detail)
-    return res.json()
+def _resolve_source(url: str) -> tuple[str, str]:
+    for name, provider in PROVIDERS.items():
+        source_id = provider.parse_source(url)
+        if source_id:
+            return name, source_id
+    raise HTTPException(
+        400,
+        "Could not recognize that link. Paste a public Google Drive folder "
+        "or Dropbox shared folder link.",
+    )
 
 
-@app.get("/api/gallery/{folder_id}")
+class GalleryRequest(BaseModel):
+    url: str | None = None
+    provider: str | None = None
+    source: str | None = None
+
+
+@app.post("/api/gallery")
 @limiter.limit("20/minute")
-async def get_gallery(request: Request, folder_id: str):
-    validate_drive_id(folder_id)
+async def get_gallery(request: Request, payload: GalleryRequest):
+    if payload.provider and payload.source:
+        provider_name, source_id = payload.provider, payload.source
+        provider = _get_provider(provider_name)
+    elif payload.url:
+        provider_name, source_id = _resolve_source(payload.url)
+        provider = PROVIDERS[provider_name]
+    else:
+        raise HTTPException(400, "Missing url")
 
-    cache_key = f"folder-cache/{folder_id}.json"
+    provider.validate_ref(source_id)
+
+    cache_key = f"{provider_name}/folder-cache/{source_id}.json"
     cached = cache.get_json(cache_key, FOLDER_CACHE_TTL)
     if cached is not None:
-        return cached
+        return {"provider": provider_name, "source": source_id, **cached}
 
-    folder = await drive_get(f"files/{folder_id}", {"fields": "name"})
-
-    fields = "nextPageToken,files(id,name,imageMediaMetadata,createdTime,modifiedTime,mimeType)"
-    q = f"'{folder_id}' in parents and mimeType contains 'image/' and trashed = false"
-    all_files = []
-    page_token = ""
-    while True:
-        params = {"q": q, "fields": fields, "pageSize": 1000}
-        if page_token:
-            params["pageToken"] = page_token
-        data = await drive_get("files", params)
-        all_files.extend(data.get("files", []))
-        page_token = data.get("nextPageToken", "")
-        if not page_token:
-            break
-
-    result = {"name": folder.get("name") or "Gallery", "files": all_files}
+    result = await provider.list_gallery(source_id)
     cache.put_json(cache_key, result)
-    return result
+    return {"provider": provider_name, "source": source_id, **result}
 
 
 def _cdn_redirect(cache_key: str) -> Response:
     return RedirectResponse(f"{CDN_BASE_URL}/{cache_key}", status_code=302)
 
 
-async def proxy_public_image(file_id: str, size_param: str, cache_prefix: str) -> Response:
-    validate_drive_id(file_id)
-    cache_key = f"{cache_prefix}/{file_id}"
+async def _proxy_image(provider_name: str, file_ref: str, kind: str) -> Response:
+    provider = _get_provider(provider_name)
+    provider.validate_ref(file_ref)
+    cache_key = f"{provider_name}/{kind}/{file_ref}"
 
     # Cache hit: a plain GetObject is the one S3 operation every
     # S3-compatible provider is guaranteed to get right (HeadObject and
@@ -119,52 +120,41 @@ async def proxy_public_image(file_id: str, size_param: str, cache_prefix: str) -
         return Response(content=data, media_type=content_type,
                          headers={"Cache-Control": "public, max-age=2592000, immutable"})
 
-    # Cache miss: fetch from Drive's public (keyless) thumbnail endpoint once,
-    # store it, then serve it (via CDN redirect if configured, else directly).
-    url = f"https://drive.google.com/thumbnail?id={file_id}&sz={size_param}"
-    async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
-        res = await client.get(url)
-    if res.status_code != 200:
-        raise HTTPException(404, "Image not found or folder is no longer public")
-
-    content_type = res.headers.get("content-type", "image/jpeg")
-    cached_ok = cache.put_bytes(cache_key, res.content, content_type)
+    # Cache miss: fetch from the source once, store it, then serve it (via
+    # CDN redirect if configured, else directly).
+    fetch = provider.get_thumb if kind == "thumb" else provider.get_full
+    content, content_type = await fetch(file_ref)
+    cached_ok = cache.put_bytes(cache_key, content, content_type)
 
     # Only redirect to the CDN if the upload actually succeeded — redirecting
     # to an object that was never written would just 404 at Cloudflare/B2.
     if CDN_BASE_URL and cached_ok:
         return _cdn_redirect(cache_key)
-    return Response(content=res.content, media_type=content_type,
+    return Response(content=content, media_type=content_type,
                      headers={"Cache-Control": "public, max-age=2592000, immutable"})
 
 
-@app.get("/api/thumb/{file_id}")
+@app.get("/api/thumb/{provider_name}/{file_ref}")
 @limiter.limit("300/minute")
-async def get_thumb(request: Request, file_id: str):
-    return await proxy_public_image(file_id, "w600", "thumb")
+async def get_thumb(request: Request, provider_name: str, file_ref: str):
+    return await _proxy_image(provider_name, file_ref, "thumb")
 
 
-@app.get("/api/full/{file_id}")
+@app.get("/api/full/{provider_name}/{file_ref}")
 @limiter.limit("120/minute")
-async def get_full(request: Request, file_id: str):
-    return await proxy_public_image(file_id, "w2200", "full")
+async def get_full(request: Request, provider_name: str, file_ref: str):
+    return await _proxy_image(provider_name, file_ref, "full")
 
 
-@app.get("/api/download/{file_id}")
+@app.get("/api/download/{provider_name}/{file_ref}")
 @limiter.limit("60/minute")
-async def download_file(request: Request, file_id: str, name: str = "download"):
-    validate_drive_id(file_id)
-    url = f"https://drive.google.com/uc?export=download&id={file_id}"
-
-    async def stream():
-        async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
-            async with client.stream("GET", url) as res:
-                async for chunk in res.aiter_bytes():
-                    yield chunk
+async def download_file(request: Request, provider_name: str, file_ref: str, name: str = "download"):
+    provider = _get_provider(provider_name)
+    provider.validate_ref(file_ref)
 
     safe_name = name.replace('"', "")
     return StreamingResponse(
-        stream(),
+        provider.stream_download(file_ref),
         media_type="application/octet-stream",
         headers={"Content-Disposition": f'attachment; filename="{safe_name}"'},
     )
@@ -198,7 +188,13 @@ def _sanitize_zip_name(name: str) -> str:
 
 @app.post("/api/download-zip")
 @limiter.limit("10/minute")
-async def download_zip(request: Request, files: str = Form(...), zip_name: str = Form("gallery")):
+async def download_zip(
+    request: Request,
+    files: str = Form(...),
+    zip_name: str = Form("gallery"),
+    provider: str = Form("drive"),
+):
+    provider_mod = _get_provider(provider)
     try:
         file_list = json.loads(files)
     except ValueError:
@@ -208,28 +204,23 @@ async def download_zip(request: Request, files: str = Form(...), zip_name: str =
     if len(file_list) > MAX_ZIP_FILES:
         raise HTTPException(400, f"Too many files (max {MAX_ZIP_FILES} per zip)")
 
-    ids = []
+    refs = []
     names = []
     for item in file_list:
-        file_id = item.get("id", "")
-        validate_drive_id(file_id)
-        ids.append(file_id)
-        names.append(item.get("name") or file_id)
+        file_ref = item.get("id", "")
+        provider_mod.validate_ref(file_ref)
+        refs.append(file_ref)
+        names.append(item.get("name") or file_ref)
     names = _dedupe_names(names)
 
-    async def member_content(file_id: str):
-        url = f"https://drive.google.com/uc?export=download&id={file_id}"
-        async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
-            async with client.stream("GET", url) as res:
-                if res.status_code != 200:
-                    raise HTTPException(404, f"File {file_id} not found or not public")
-                async for chunk in res.aiter_bytes():
-                    yield chunk
+    async def member_content(file_ref: str):
+        async for chunk in provider_mod.stream_download(file_ref):
+            yield chunk
 
     async def members():
         now = datetime.now()
-        for file_id, name in zip(ids, names):
-            yield (name, now, S_IFREG | 0o644, ZIP_32, member_content(file_id))
+        for file_ref, name in zip(refs, names):
+            yield (name, now, S_IFREG | 0o644, ZIP_32, member_content(file_ref))
 
     zip_filename = f"{_sanitize_zip_name(zip_name)}.zip"
 

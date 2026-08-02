@@ -345,14 +345,14 @@
 
   <section class="setup" id="setup">
     <div class="eyebrow">Client Delivery</div>
-    <h1>Turn a Drive folder into a <em>gallery</em> worth delivering.</h1>
-    <p class="sub">Paste the shared Google Drive folder link. The gallery is built live from what's inside — nothing is uploaded or stored anywhere else.</p>
+    <h1>Turn a shared folder into a <em>gallery</em> worth delivering.</h1>
+    <p class="sub">Paste a shared Google Drive or Dropbox folder link. The gallery is built live from what's inside — nothing is uploaded or stored anywhere else.</p>
 
     <form class="setup-form" id="setupForm">
       <div class="field">
-        <label for="folderUrl">Drive folder link</label>
-        <input type="text" id="folderUrl" placeholder="https://drive.google.com/drive/folders/…" autocomplete="off">
-        <div class="hint">Folder sharing must be set to <b style="color:var(--ink-dim);">Anyone with the link — Viewer</b>.</div>
+        <label for="folderUrl">Drive or Dropbox folder link</label>
+        <input type="text" id="folderUrl" placeholder="https://drive.google.com/drive/folders/… or https://www.dropbox.com/scl/fo/…" autocomplete="off">
+        <div class="hint">Drive folders must be shared as <b style="color:var(--ink-dim);">Anyone with the link — Viewer</b>. Dropbox folders must have link sharing turned on.</div>
       </div>
       <button type="submit" class="btn primary">Open Gallery</button>
       <div class="setup-error" id="setupError"></div>
@@ -434,9 +434,11 @@
   let photos = [];        // { id, name, thumb, full, downloadUrl, takenAt, modifiedAt }
   let currentIndex = -1;
   let currentSort = 'date-asc';
-  let currentFolderId = null;
+  let currentProvider = 'drive';
+  let currentSourceId = null;
   let currentGalleryName = 'gallery';
   let pendingSort = null;
+  let pendingSourceRef = null;   // { provider, source } — set when loading from a share link
   let selectedIds = new Set();
   let lastSelectedIndex = null;
   let maxCols = 3;
@@ -482,33 +484,23 @@
   }
   els.reviewToastClose.addEventListener('click', hideReviewToast);
 
-  function extractFolderId(url){
-    const patterns = [
-      /\/folders\/([a-zA-Z0-9_-]{10,})/,
-      /[?&]id=([a-zA-Z0-9_-]{10,})/
-    ];
-    for(const p of patterns){
-      const m = url.match(p);
-      if(m) return m[1];
-    }
-    // fallback: bare ID pasted directly
-    if(/^[a-zA-Z0-9_-]{10,}$/.test(url.trim())) return url.trim();
-    return null;
-  }
-
   function showError(msg){
     els.setupError.textContent = msg;
     els.setupError.style.display = 'block';
   }
   function clearError(){ els.setupError.style.display = 'none'; }
 
-  async function fetchGallery(folderId){
-    const res = await fetch(`/api/gallery/${folderId}`);
+  async function fetchGallery(body){
+    const res = await fetch('/api/gallery', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
     const data = await res.json().catch(()=> ({}));
     if(!res.ok){
       throw new Error(data.detail || 'Request failed');
     }
-    return data; // { name, files }
+    return data; // { provider, source, name, files }
   }
 
   function parseExifTime(t){
@@ -527,16 +519,16 @@
     return h / w;
   }
 
-  function buildPhotoObjects(files){
+  function buildPhotoObjects(files, provider){
     return files.map(f => {
       const takenAt = parseExifTime(f.imageMediaMetadata && f.imageMediaMetadata.time) || new Date(f.createdTime);
       const modifiedAt = new Date(f.modifiedTime || f.createdTime);
       return {
         id: f.id,
         name: f.name,
-        thumb: `/api/thumb/${f.id}`,
-        full: `/api/full/${f.id}`,
-        downloadUrl: `/api/download/${f.id}?name=${encodeURIComponent(f.name)}`,
+        thumb: `/api/thumb/${provider}/${f.id}`,
+        full: `/api/full/${provider}/${f.id}`,
+        downloadUrl: `/api/download/${provider}/${f.id}?name=${encodeURIComponent(f.name)}`,
         takenAt,
         modifiedAt,
         aspect: getAspect(f),
@@ -727,6 +719,11 @@
     nameInput.name = 'zip_name';
     nameInput.value = currentGalleryName;
     form.appendChild(nameInput);
+    const providerInput = document.createElement('input');
+    providerInput.type = 'hidden';
+    providerInput.name = 'provider';
+    providerInput.value = currentProvider;
+    form.appendChild(providerInput);
     document.body.appendChild(form);
     form.submit();
     form.remove();
@@ -846,8 +843,6 @@
     clearError();
     const rawUrl = els.folderUrl.value.trim();
     if(!rawUrl){ showError('Enter the folder link.'); return; }
-    const folderId = extractFolderId(rawUrl);
-    if(!folderId){ showError('Could not read a folder ID from that link. Paste the full Drive folder URL.'); return; }
 
     const submitBtn = els.setupForm.querySelector('button[type="submit"]');
     submitBtn.disabled = true;
@@ -860,14 +855,18 @@
     renderSkeletons(10);
 
     try {
-      const { name: folderName, files } = await fetchGallery(folderId);
-      currentFolderId = folderId;
-      currentGalleryName = folderName || 'gallery';
+      const data = pendingSourceRef
+        ? await fetchGallery({ provider: pendingSourceRef.provider, source: pendingSourceRef.source })
+        : await fetchGallery({ url: rawUrl });
+      pendingSourceRef = null;
+      currentProvider = data.provider;
+      currentSourceId = data.source;
+      currentGalleryName = data.name || 'gallery';
       currentSort = pendingSort || 'date-asc';
       pendingSort = null;
       els.sortSelect.value = currentSort;
-      photos = sortPhotos(buildPhotoObjects(files), currentSort);
-      els.galleryTitle.textContent = folderName || 'Delivered Frames';
+      photos = sortPhotos(buildPhotoObjects(data.files, currentProvider), currentSort);
+      els.galleryTitle.textContent = data.name || 'Delivered Frames';
       els.photoCount.innerHTML = `<b>${photos.length}</b> frames`;
       els.metaRow.style.display = 'flex';
       els.downloadAllBtn.disabled = photos.length === 0;
@@ -876,10 +875,11 @@
       updateSelectionUI();
       renderGrid();
     } catch(err){
+      pendingSourceRef = null;
       els.setup.style.display = 'flex';
       els.galleryHead.style.display = 'none';
       els.grid.style.display = 'none';
-      showError('Could not load this folder — ' + err.message + '. Check the folder is shared publicly (Anyone with the link — Viewer).');
+      showError('Could not load this gallery — ' + err.message + '. Check the folder is shared publicly.');
     } finally {
       submitBtn.disabled = false;
       submitBtn.textContent = 'Open Gallery';
@@ -887,10 +887,11 @@
   });
 
   els.shareBtn.addEventListener('click', async ()=>{
-    if(!currentFolderId) return;
+    if(!currentSourceId) return;
     const url = new URL(location.href);
     url.search = '';
-    url.searchParams.set('folder', currentFolderId);
+    url.searchParams.set('provider', currentProvider);
+    url.searchParams.set('source', currentSourceId);
     url.searchParams.set('sort', currentSort);
     const shareUrl = url.toString();
     const original = els.shareBtn.textContent;
@@ -910,12 +911,22 @@
   // ---------- auto-load from a shared link ----------
   (function initFromUrl(){
     const params = new URLSearchParams(location.search);
-    const folderParam = params.get('folder');
-    if(!folderParam) return;
-    els.folderUrl.value = folderParam;
     const sortParam = params.get('sort');
     if(sortParam) pendingSort = sortParam;
-    els.setupForm.requestSubmit();
+
+    const providerParam = params.get('provider');
+    const sourceParam = params.get('source');
+    const folderParam = params.get('folder'); // legacy Drive-only share links
+
+    if(providerParam && sourceParam){
+      pendingSourceRef = { provider: providerParam, source: sourceParam };
+      els.folderUrl.value = sourceParam;
+      els.setupForm.requestSubmit();
+    } else if(folderParam){
+      pendingSourceRef = { provider: 'drive', source: folderParam };
+      els.folderUrl.value = folderParam;
+      els.setupForm.requestSubmit();
+    }
   })();
 
 })();
