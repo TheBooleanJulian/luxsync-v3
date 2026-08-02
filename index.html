@@ -97,6 +97,7 @@
     min-height:72vh; display:flex; flex-direction:column; align-items:center; justify-content:center;
     text-align:center; padding:60px 20px;
   }
+  .setup-logo{width:clamp(96px,14vw,140px); height:auto; margin-bottom:28px;}
   .setup .eyebrow{
     font-family:'JetBrains Mono',monospace; font-size:12px; letter-spacing:0.18em;
     color:var(--teal); text-transform:uppercase; margin-bottom:18px;
@@ -346,6 +347,7 @@
 <main>
 
   <section class="setup" id="setup">
+    <img class="setup-logo" src="/static/logo-full.png" alt="LuxSync">
     <div class="eyebrow">Client Delivery</div>
     <h1>Turn a shared folder into a <em>gallery</em> worth delivering.</h1>
     <p class="sub">Paste a shared Google Drive or Dropbox folder link. The gallery is built live from what's inside — nothing is uploaded or stored anywhere else.</p>
