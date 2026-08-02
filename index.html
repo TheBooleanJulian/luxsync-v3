@@ -321,14 +321,17 @@
         <div class="eyebrow" id="galleryEyebrow">Contact Sheet</div>
         <h2 id="galleryTitle">Gallery</h2>
       </div>
-      <select class="sort-select" id="sortSelect">
-        <option value="date-asc">Date taken (oldest first)</option>
-        <option value="date-desc">Date taken (newest first)</option>
-        <option value="name-asc">Name (A–Z)</option>
-        <option value="name-desc">Name (Z–A)</option>
-        <option value="modified-desc">Latest modified</option>
-        <option value="modified-asc">Oldest modified</option>
-      </select>
+      <div style="display:flex; align-items:center; gap:10px;">
+        <button class="btn" id="colsToggleBtn">5 Col</button>
+        <select class="sort-select" id="sortSelect">
+          <option value="date-asc">Date taken (oldest first)</option>
+          <option value="date-desc">Date taken (newest first)</option>
+          <option value="name-asc">Name (A–Z)</option>
+          <option value="name-desc">Name (Z–A)</option>
+          <option value="modified-desc">Latest modified</option>
+          <option value="modified-asc">Oldest modified</option>
+        </select>
+      </div>
     </div>
   </section>
 
@@ -376,6 +379,7 @@
   let currentFolderId = null;
   let pendingSort = null;
   let selectedIds = new Set();
+  let maxCols = 3;
 
   const els = {
     setup: document.getElementById('setup'),
@@ -390,6 +394,7 @@
     galleryHead: document.getElementById('galleryHead'),
     galleryTitle: document.getElementById('galleryTitle'),
     sortSelect: document.getElementById('sortSelect'),
+    colsToggleBtn: document.getElementById('colsToggleBtn'),
     grid: document.getElementById('grid'),
     emptyState: document.getElementById('emptyState'),
     lightbox: document.getElementById('lightbox'),
@@ -482,9 +487,8 @@
   let relayout = null;
 
   function getColumnCount(width){
-    if(width >= 1320) return 4;
-    if(width >= 980) return 3;
-    if(width >= 640) return 2;
+    if(width >= 640) return Math.min(maxCols, Math.max(1, Math.round(width / 300)));
+    if(width >= 480) return 2;
     return 1;
   }
 
@@ -669,6 +673,12 @@
     currentIndex = (currentIndex + dir + photos.length) % photos.length;
     updateLightbox();
   }
+
+  els.colsToggleBtn.addEventListener('click', ()=>{
+    maxCols = maxCols === 3 ? 5 : 3;
+    els.colsToggleBtn.textContent = maxCols === 3 ? '5 Col' : '3 Col';
+    if(relayout) relayout();
+  });
 
   els.sortSelect.addEventListener('change', ()=>{
     currentSort = els.sortSelect.value;
