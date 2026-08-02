@@ -189,9 +189,16 @@ def _dedupe_names(names: list) -> list:
     return result
 
 
+def _sanitize_zip_name(name: str) -> str:
+    name = (name or "").strip()
+    name = re.sub(r'[\r\n"\\/:*?<>|]', "", name)
+    name = name.strip(". ")
+    return name or "gallery"
+
+
 @app.post("/api/download-zip")
 @limiter.limit("10/minute")
-async def download_zip(request: Request, files: str = Form(...)):
+async def download_zip(request: Request, files: str = Form(...), zip_name: str = Form("gallery")):
     try:
         file_list = json.loads(files)
     except ValueError:
@@ -224,10 +231,12 @@ async def download_zip(request: Request, files: str = Form(...)):
         for file_id, name in zip(ids, names):
             yield (name, now, S_IFREG | 0o644, ZIP_32, member_content(file_id))
 
+    zip_filename = f"{_sanitize_zip_name(zip_name)}.zip"
+
     return StreamingResponse(
         async_stream_zip(members()),
         media_type="application/zip",
-        headers={"Content-Disposition": 'attachment; filename="gallery.zip"'},
+        headers={"Content-Disposition": f'attachment; filename="{zip_filename}"'},
     )
 
 

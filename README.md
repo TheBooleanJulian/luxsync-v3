@@ -4,7 +4,7 @@
 
 **A premium, dependency-free photo gallery that turns any public Google Drive folder into a scrollable, previewable, downloadable client gallery.**
 
-![Version](https://img.shields.io/badge/version-0.5.0-00D4C8)
+![Version](https://img.shields.io/badge/version-0.6.0-00D4C8)
 ![Python](https://img.shields.io/badge/-Python-3776AB?logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/-FastAPI-009688?logo=fastapi&logoColor=white)
 ![Zeabur](https://img.shields.io/badge/-Zeabur-6C5CE7)
@@ -24,10 +24,11 @@ LuxSync v3 lets photographers hand a client a single link — the client pastes 
 - **Folder metadata + file list caching** — Drive API quota is spent once per folder per TTL window (default 10 min), cache hits cost zero quota
 - **Permanent image cache in S3-compatible storage** — thumbnails and full images are fetched from Drive once and stored; every subsequent request hits the cache
 - **Optional Cloudflare CDN redirect** — when `CDN_BASE_URL` is set, cache-hit responses are `302`s straight to the CDN instead of proxied bytes, dropping server bandwidth to near zero
-- **True masonry layout** — photos fill rows without dead space; sorts left-to-right by row
+- **True masonry layout** — photos fill rows without dead space; sorts left-to-right by row; toggle between 3 and 5 columns
 - **Sort dropdown** — reorder the gallery on the fly
-- **Lightbox preview** — click any photo for a full-size overlay
-- **Multi-select zip download** — select any number of photos and stream a zip built on the fly via `stream-zip`; nothing is buffered in memory or on disk
+- **Lightbox preview** — click any photo for a full-size overlay with filename and EXIF (dimensions, camera, focal length, aperture, shutter speed, ISO)
+- **Multi-select zip download** — click to select individual photos, or select one and Shift-click another to select the whole range in between; stream a zip built on the fly via `stream-zip`, named after the gallery, with nothing buffered in memory or on disk
+- **Download All** — zips the entire gallery the same way, chunked automatically for very large folders
 - **Single-file download** — selecting exactly one photo skips the zip and streams the original directly
 - **Per-IP rate limiting** — every route is independently limited via `slowapi`; one heavy visitor degrades gracefully without burning Drive quota for everyone
 - **Shareable gallery links** — encoded folder ID in the URL so a gallery view is directly linkable
@@ -109,9 +110,10 @@ Deployed on Zeabur via GitHub CI/CD. The `Procfile` defines the web process. Pus
 - [x] Optional Cloudflare CDN redirect for zero-proxy cache hits
 - [x] True masonry layout with sort dropdown
 - [x] Lightbox preview
-- [x] Multi-select streaming zip download (stream-zip, zero buffering)
+- [x] Multi-select streaming zip download (stream-zip, zero buffering), including Shift-click range select and gallery-named zip files
 - [x] Shareable gallery links
 - [x] Per-IP rate limiting on all routes
+- [x] EXIF metadata display (dimensions, camera/lens, exposure) in the lightbox
 
 **Future Roadmap**
 
@@ -122,7 +124,6 @@ Config & testing
 
 Gallery features
 
-- EXIF metadata display (capture date, camera/lens) in the lightbox
 - Password-protected or expiring gallery links, for clients who shouldn't get an indefinite public URL
 - Client favorites/starring, so a client can flag their picks without needing the zip download
 - Virtualized/paginated grid for very large folders (current masonry renders everything at once)
@@ -138,6 +139,7 @@ Ops & delivery
 
 Summarised from commit history, most recent first. Versions follow `0.MINOR.PATCH` — MINOR for new features/architecture changes, PATCH for fixes.
 
+- **v0.6.0 — 2026-08-02 (gallery UX)** — Fixed the 5-column grid toggle rendering only 4 columns; renamed the toggle buttons to "View 3/5 Columns". Added a hint explaining hover-to-select and Shift-click range selection (select one photo, Shift-click another to select everything in between). Lightbox now shows filename and EXIF (dimensions, camera, focal length, aperture, shutter speed, ISO). "Download All" now zips the whole gallery instead of downloading files one by one, chunked to respect the backend's max-files-per-zip limit. Zip downloads are now named after the gallery instead of `gallery.zip`. Added a closeable, animated toast prompting for a Google review shortly after any download. Replaced the footer tagline with a "Built by TheBooleanJulian" link to GitHub.
 - **v0.5.0 — 2026-07-31 (licensing + docs)** — Dual licensed the project under AGPLv3 + a commercial license (previously MIT); added `LICENSE` (AGPLv3), `COMMERCIAL-LICENSE.md`, `COMMERCIAL-LICENSE-AGREEMENT-TEMPLATE.md`, and `NOTICE`. Added `.env.example` and fixed the Configuration table, which documented a nonexistent `S3_BUCKET_NAME` instead of the actual `S3_BUCKET`/`S3_REGION` vars read in `cache.py`. Reworked the changelog to carry semver version numbers and expanded the roadmap section.
 - **v0.4.1 — 2026-07-18 (cache stability)** — Dropped all S3 existence pre-checks (`exists()` and ranged `GetObject`) after both produced false positives against B2 on empty buckets; plain `GetObject` is now the only check. Cache write failures now log loudly without crashing the request; switched diagnostics to `print()` for reliable visibility in Zeabur logs.
 - **v0.4.0 — 2026-07-17 (zip download + CDN)** — Added multi-select zip download (streaming via `stream-zip`, zero memory buffering) and Cloudflare-fronted B2/R2 CDN redirect for cache-hit image requests.

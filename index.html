@@ -275,36 +275,50 @@
     position:relative; z-index:1;
   }
   footer .mono{font-size:11px; color:var(--ink-faint); letter-spacing:0.06em;}
+  footer .footer-link{color:var(--ink-faint); text-decoration:none; transition:color 0.15s ease;}
+  footer .footer-link:hover{color:var(--teal);}
 
   ::-webkit-scrollbar{width:9px;} ::-webkit-scrollbar-track{background:var(--void);}
   ::-webkit-scrollbar-thumb{background:var(--panel-raised); border:2px solid var(--void); border-radius:5px;}
   ::-webkit-scrollbar-thumb:hover{background:var(--line-strong);}
 
   /* ---------- review toast ---------- */
+  @keyframes toastPulse{
+    0%, 100%{ box-shadow:0 20px 60px rgba(0,0,0,0.55), 0 0 0 0 rgba(245,200,66,0.35); }
+    50%{ box-shadow:0 20px 60px rgba(0,0,0,0.55), 0 0 0 10px rgba(245,200,66,0); }
+  }
+  @keyframes toastFloat{
+    0%, 100%{ transform:translateY(0); }
+    50%{ transform:translateY(-6px); }
+  }
   .review-toast{
     position:fixed; right:clamp(16px,3vw,32px); bottom:clamp(16px,3vw,32px);
-    z-index:200; width:min(320px, calc(100vw - 32px));
-    background:var(--panel-raised); border:1px solid var(--line-strong);
-    border-radius:2px; padding:18px 34px 18px 18px;
-    box-shadow:0 20px 50px rgba(0,0,0,0.5);
+    z-index:200; width:min(440px, calc(100vw - 32px));
+    background:var(--panel-raised); border:1.5px solid var(--gold);
+    border-radius:3px; padding:26px 44px 26px 26px;
     opacity:0; transform:translateY(12px);
     pointer-events:none;
     transition:opacity 0.3s ease, transform 0.3s ease;
   }
-  .review-toast.show{opacity:1; transform:translateY(0); pointer-events:auto;}
-  .review-toast p{font-size:12.5px; line-height:1.55; color:var(--ink-dim); margin-bottom:12px;}
-  .review-toast a{
-    display:inline-block; font-family:'JetBrains Mono',monospace; font-size:11.5px;
-    letter-spacing:0.04em; color:var(--gold); text-decoration:none;
+  .review-toast.show{
+    opacity:1; pointer-events:auto;
+    animation:toastPulse 2.6s ease-in-out infinite, toastFloat 2.6s ease-in-out infinite;
   }
-  .review-toast a:hover{text-decoration:underline;}
+  .review-toast p{font-size:14.5px; line-height:1.6; color:var(--ink); margin-bottom:16px;}
+  .review-toast a{
+    display:inline-block; font-family:'JetBrains Mono',monospace; font-size:13px;
+    letter-spacing:0.04em; color:#00201d; text-decoration:none;
+    background:var(--gold); padding:11px 18px; border-radius:2px; font-weight:600;
+    transition:background 0.15s ease;
+  }
+  .review-toast a:hover{background:#ffd968;}
   .review-toast-close{
-    position:absolute; top:10px; right:10px;
+    position:absolute; top:12px; right:12px;
     background:transparent; border:none; color:var(--ink-faint); cursor:pointer;
-    padding:4px;
+    padding:6px;
   }
   .review-toast-close:hover{color:var(--teal);}
-  .review-toast-close svg{width:14px; height:14px; stroke:currentColor;}
+  .review-toast-close svg{width:16px; height:16px; stroke:currentColor;}
 
   @media(prefers-reduced-motion:reduce){
     *{animation-duration:0.01ms !important; transition-duration:0.01ms !important;}
@@ -363,7 +377,7 @@
         </select>
       </div>
     </div>
-    <div class="mono" style="font-size:11.5px; color:var(--ink-faint); letter-spacing:0.04em; margin-top:14px;">Hover over a photo and click the circle in the top-right corner to select it for a zipped download.</div>
+    <div class="mono" style="font-size:11.5px; color:var(--ink-faint); letter-spacing:0.04em; margin-top:14px;">Hover over a photo and click the circle in the top-right corner to select it for a zipped download. Hold Shift and click a second photo to select everything in between.</div>
   </section>
 
   <div class="grid" id="grid" style="display:none;"></div>
@@ -376,7 +390,7 @@
 
 <footer>
   <span class="mono">LUXSYNC V3</span>
-  <span class="mono">Built for delivery, not decoration</span>
+  <span class="mono">Built by <a href="https://github.com/TheBooleanJulian" target="_blank" rel="noopener" class="footer-link">TheBooleanJulian</a></span>
 </footer>
 
 <!-- Review prompt toast -->
@@ -421,8 +435,10 @@
   let currentIndex = -1;
   let currentSort = 'date-asc';
   let currentFolderId = null;
+  let currentGalleryName = 'gallery';
   let pendingSort = null;
   let selectedIds = new Set();
+  let lastSelectedIndex = null;
   let maxCols = 3;
 
   const els = {
@@ -636,7 +652,7 @@
       const select = document.createElement('div');
       select.className = 'select';
       select.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>';
-      select.addEventListener('click', (e)=>{ e.stopPropagation(); toggleSelected(p.id, frame); });
+      select.addEventListener('click', (e)=>{ e.stopPropagation(); toggleSelected(p.id, frame, idx, e.shiftKey); });
       if(selectedIds.has(p.id)) frame.classList.add('selected');
 
       frame.appendChild(img);
@@ -667,10 +683,26 @@
   }
 
   // ---------- selection + zip download ----------
-  function toggleSelected(id, frame){
-    if(selectedIds.has(id)){ selectedIds.delete(id); frame.classList.remove('selected'); }
-    else { selectedIds.add(id); frame.classList.add('selected'); }
+  function toggleSelected(id, frame, idx, shiftKey){
+    if(shiftKey && lastSelectedIndex !== null){
+      selectRange(lastSelectedIndex, idx);
+    } else {
+      if(selectedIds.has(id)){ selectedIds.delete(id); frame.classList.remove('selected'); }
+      else { selectedIds.add(id); frame.classList.add('selected'); }
+      lastSelectedIndex = idx;
+    }
     updateSelectionUI();
+  }
+
+  function selectRange(fromIdx, toIdx){
+    const start = Math.min(fromIdx, toIdx);
+    const end = Math.max(fromIdx, toIdx);
+    for(let i=start;i<=end;i++){ selectedIds.add(photos[i].id); }
+    lastSelectedIndex = toIdx;
+    els.grid.querySelectorAll('.frame').forEach(el=>{
+      const i = Number(el.dataset.index);
+      if(i >= start && i <= end) el.classList.add('selected');
+    });
   }
 
   function updateSelectionUI(){
@@ -690,6 +722,11 @@
     input.name = 'files';
     input.value = JSON.stringify(list.map(p=> ({ id: p.id, name: p.name })));
     form.appendChild(input);
+    const nameInput = document.createElement('input');
+    nameInput.type = 'hidden';
+    nameInput.name = 'zip_name';
+    nameInput.value = currentGalleryName;
+    form.appendChild(nameInput);
     document.body.appendChild(form);
     form.submit();
     form.remove();
@@ -778,6 +815,7 @@
   els.sortSelect.addEventListener('change', ()=>{
     currentSort = els.sortSelect.value;
     photos = sortPhotos(photos, currentSort);
+    lastSelectedIndex = null;
     renderGrid();
   });
 
@@ -824,6 +862,7 @@
     try {
       const { name: folderName, files } = await fetchGallery(folderId);
       currentFolderId = folderId;
+      currentGalleryName = folderName || 'gallery';
       currentSort = pendingSort || 'date-asc';
       pendingSort = null;
       els.sortSelect.value = currentSort;
@@ -833,6 +872,7 @@
       els.metaRow.style.display = 'flex';
       els.downloadAllBtn.disabled = photos.length === 0;
       selectedIds = new Set();
+      lastSelectedIndex = null;
       updateSelectionUI();
       renderGrid();
     } catch(err){
