@@ -1,5 +1,7 @@
 <div align="center">
 
+![LuxSync](assets/luxsync%20banner.png)
+
 # LuxSync v3
 
 **A premium, dependency-free photo gallery that turns any public Google Drive or Dropbox folder into a scrollable, previewable, downloadable client gallery.**
