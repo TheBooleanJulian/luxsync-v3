@@ -1,6 +1,6 @@
 <div align="center">
 
-![LuxSync](assets/luxsync%20banner.png)
+![LuxSync](assets/luxsync%20banner%20v3.png)
 
 # LuxSync v3
 
