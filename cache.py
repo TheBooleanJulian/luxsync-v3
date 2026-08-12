@@ -44,7 +44,18 @@ def _s3():
             # is the standard-recommended setting for non-AWS S3-compatible
             # providers — virtual-hosted-style (the boto3 default) is where
             # HeadObject false-positives against B2 have been traced to.
-            config=Config(signature_version="s3v4", s3={"addressing_style": "path"}),
+            #
+            # request/response checksum calculation default to a flow that
+            # assumes 32-character AWS-style access keys (botocore >=1.36),
+            # which throws "Credential access key has length 25, should be
+            # 32" against B2's 25-character key IDs. when_required opts
+            # back into the old behavior.
+            config=Config(
+                signature_version="s3v4",
+                s3={"addressing_style": "path"},
+                request_checksum_calculation="when_required",
+                response_checksum_validation="when_required",
+            ),
         )
     return _client
 
