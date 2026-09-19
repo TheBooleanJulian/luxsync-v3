@@ -160,7 +160,7 @@ async def list_gallery(source_id: str) -> dict:
         "path": "",
         "shared_link": {"url": shared_url},
         "include_media_info": True,
-        "recursive": False,
+        "recursive": True,
     })
     entries.extend(data.get("entries", []))
     while data.get("has_more"):

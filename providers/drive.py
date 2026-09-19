@@ -51,11 +51,16 @@ async def _drive_get(path: str, params: dict) -> dict:
     return res.json()
 
 
-async def list_gallery(source_id: str) -> dict:
-    folder = await _drive_get(f"files/{source_id}", {"fields": "name"})
+FOLDER_MIME = "application/vnd.google-apps.folder"
+# Safety cap on how many subfolders one gallery walk will visit — shoots are
+# nested at most a couple of levels deep (event > per-person), this just
+# guards against a pathological/circular tree.
+MAX_FOLDERS = 300
 
+
+async def _list_children(parent_id: str) -> list[dict]:
     fields = "nextPageToken,files(id,name,imageMediaMetadata,createdTime,modifiedTime,mimeType)"
-    q = f"'{source_id}' in parents and mimeType contains 'image/' and trashed = false"
+    q = f"'{parent_id}' in parents and trashed = false"
     all_files = []
     page_token = ""
     while True:
@@ -67,7 +72,31 @@ async def list_gallery(source_id: str) -> dict:
         page_token = data.get("nextPageToken", "")
         if not page_token:
             break
+    return all_files
 
+
+async def _collect_images(root_id: str) -> list[dict]:
+    """Walk the folder tree rooted at root_id, gathering every image found —
+    directly inside it or in any subfolder (galleries are often organized as
+    an event folder full of per-person/per-shoot subfolders with no images
+    of their own)."""
+    images = []
+    queue = [root_id]
+    visited = 0
+    while queue and visited < MAX_FOLDERS:
+        folder_id = queue.pop(0)
+        visited += 1
+        for child in await _list_children(folder_id):
+            if child.get("mimeType") == FOLDER_MIME:
+                queue.append(child["id"])
+            elif (child.get("mimeType") or "").startswith("image/"):
+                images.append(child)
+    return images
+
+
+async def list_gallery(source_id: str) -> dict:
+    folder = await _drive_get(f"files/{source_id}", {"fields": "name"})
+    all_files = await _collect_images(source_id)
     return {"name": folder.get("name") or "Gallery", "files": all_files}
 
 
