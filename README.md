@@ -6,7 +6,7 @@
 
 **A premium, dependency-free photo gallery that turns any public Google Drive or Dropbox folder into a scrollable, previewable, downloadable client gallery.**
 
-![Version](https://img.shields.io/badge/version-0.7.0-00D4C8)
+![Version](https://img.shields.io/badge/version-0.7.1-00D4C8)
 ![Python](https://img.shields.io/badge/-Python-3776AB?logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/-FastAPI-009688?logo=fastapi&logoColor=white)
 ![Zeabur](https://img.shields.io/badge/-Zeabur-6C5CE7)
@@ -23,6 +23,7 @@ LuxSync v3 lets photographers hand a client a single link — the client pastes 
 ## Features
 
 - **Multi-provider gallery sources** — paste a public Google Drive folder or Dropbox shared-folder link; the backend detects which one and dispatches to the matching provider (see [Adding a provider](#adding-a-provider) to add more)
+- **Recursive subfolder support** — a gallery folder organized into per-person or per-shoot subfolders (with no images directly inside it) still populates correctly; both providers walk the full folder tree
 - **Server-side API credentials** — the browser calls FastAPI endpoints; Drive/Dropbox credentials never reach the client
 - **Folder metadata + file list caching** — source API quota is spent once per folder per TTL window (default 10 min), cache hits cost zero quota
 - **Permanent image cache in S3-compatible storage** — thumbnails and full images are fetched from the source once and stored; every subsequent request hits the cache
@@ -177,6 +178,7 @@ Ops & delivery
 
 Summarised from commit history, most recent first. Versions follow `0.MINOR.PATCH` — MINOR for new features/architecture changes, PATCH for fixes.
 
+- **v0.7.1 — 2026-09-20 (recursive galleries)** — Fixed galleries organized as an event folder full of per-person/per-shoot subfolders returning "no viewable images" because listing only checked the top level. Drive now BFS-walks the folder tree (capped at 300 folders); Dropbox's `list_folder` now passes `recursive: True` instead of `False`.
 - **v0.7.0 — 2026-08-02 (multi-provider galleries)** — Introduced a `providers/` abstraction so `main.py` no longer hardcodes Drive-specific logic; added Dropbox as a second gallery source (public shared-folder links, read via one app-owned OAuth2 token so visitors never authenticate). Gallery resolution moved from `GET /api/gallery/{folder_id}` to `POST /api/gallery` accepting a raw pasted URL (or a `{provider, source}` pair for share-link reloads), which tries each provider in turn. All image/download routes now carry a `{provider}` segment. Old `?folder=` share links still work.
 - **v0.6.0 — 2026-08-02 (gallery UX)** — Fixed the 5-column grid toggle rendering only 4 columns; renamed the toggle buttons to "View 3/5 Columns". Added a hint explaining hover-to-select and Shift-click range selection (select one photo, Shift-click another to select everything in between). Lightbox now shows filename and EXIF (dimensions, camera, focal length, aperture, shutter speed, ISO). "Download All" now zips the whole gallery instead of downloading files one by one, chunked to respect the backend's max-files-per-zip limit. Zip downloads are now named after the gallery instead of `gallery.zip`. Added a closeable, animated toast prompting for a Google review shortly after any download. Replaced the footer tagline with a "Built by TheBooleanJulian" link to GitHub.
 - **v0.5.0 — 2026-07-31 (licensing + docs)** — Dual licensed the project under AGPLv3 + a commercial license (previously MIT); added `LICENSE` (AGPLv3), `COMMERCIAL-LICENSE.md`, `COMMERCIAL-LICENSE-AGREEMENT-TEMPLATE.md`, and `NOTICE`. Added `.env.example` and fixed the Configuration table, which documented a nonexistent `S3_BUCKET_NAME` instead of the actual `S3_BUCKET`/`S3_REGION` vars read in `cache.py`. Reworked the changelog to carry semver version numbers and expanded the roadmap section.
