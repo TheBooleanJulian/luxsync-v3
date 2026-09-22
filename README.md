@@ -102,6 +102,12 @@ Without Dropbox credentials configured, Drive links keep working exactly as befo
 
 Without `CDN_BASE_URL`, images are still cached in B2/R2 — they're just proxied through this server on every request instead of redirected.
 
+## Screenshots
+
+![LuxSync banner](assets/luxsync%20banner%20v3.png)
+
+_Full gallery/lightbox screenshots coming soon — the image above is the project's current banner art._
+
 ## Project Structure
 
 ```
