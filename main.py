@@ -20,6 +20,7 @@ from datetime import datetime
 from stat import S_IFREG
 
 from fastapi import FastAPI, Form, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -49,6 +50,17 @@ limiter = Limiter(key_func=get_remote_address)
 app = FastAPI()
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+# Every response here is public gallery metadata/images gated only by
+# knowing the source folder ID, not by origin — so a wildcard is fine. This
+# lets any site in the fleet (or elsewhere) call /api/gallery etc. directly
+# from browser JS, not just from a server-side build step.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type"],
+)
 
 
 def _get_provider(name: str):
