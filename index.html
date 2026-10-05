@@ -462,6 +462,10 @@
   const sprocketRow = document.getElementById('sprockets');
   for(let i=0;i<80;i++){ const s=document.createElement('span'); sprocketRow.appendChild(s); }
 
+  // Video files aren't played inline (see renderGrid) — clicking one
+  // downloads it, so the grid badge is a download icon, not a play icon.
+  const VIDEO_BADGE_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><polyline points="7 11 12 16 17 11"/><line x1="5" y1="20" x2="19" y2="20"/></svg>';
+
   // ---------- state ----------
   let photos = [];        // { id, name, thumb, full, downloadUrl, takenAt, modifiedAt }
   let currentIndex = -1;
@@ -675,7 +679,7 @@
         media.onerror = ()=>{
           const placeholder = Object.assign(document.createElement('div'), {
             className: 'video-placeholder',
-            innerHTML: '<svg viewBox="0 0 24 24" fill="none" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polygon points="10 8 16 12 10 16" fill="currentColor" stroke="none"/></svg>',
+            innerHTML: VIDEO_BADGE_SVG,
           });
           placeholder.style.aspectRatio = `1 / ${p.aspect}`;
           media.replaceWith(placeholder);
@@ -699,10 +703,10 @@
 
       frame.appendChild(media);
       if(p.isVideo){
-        const play = document.createElement('div');
-        play.className = 'play-overlay';
-        play.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polygon points="10 8 16 12 10 16" fill="currentColor" stroke="none"/></svg>';
-        frame.appendChild(play);
+        const badge = document.createElement('div');
+        badge.className = 'play-overlay';
+        badge.innerHTML = VIDEO_BADGE_SVG;
+        frame.appendChild(badge);
       }
       frame.appendChild(tag);
       frame.appendChild(dl);
