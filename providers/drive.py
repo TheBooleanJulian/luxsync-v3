@@ -133,3 +133,31 @@ async def stream_download(file_ref: str):
                 raise HTTPException(404, f"File {file_ref} not found or not public")
             async for chunk in res.aiter_bytes():
                 yield chunk
+
+
+async def stream_range(file_ref: str, range_header: str | None):
+    """Like stream_download, but forwards an incoming Range header to Drive
+    so the client gets a real 206 response. Without this, <video> has to
+    wait for (and we have to proxy) the entire file before playback can
+    start, and Safari refuses to play at all without range support."""
+    if not DRIVE_API_KEY:
+        raise HTTPException(500, "Server is missing DRIVE_API_KEY")
+    url = f"https://www.googleapis.com/drive/v3/files/{file_ref}"
+    req_headers = {"Range": range_header} if range_header else {}
+    client = httpx.AsyncClient(timeout=60, follow_redirects=True)
+    req = client.build_request("GET", url, params={"alt": "media", "key": DRIVE_API_KEY}, headers=req_headers)
+    res = await client.send(req, stream=True)
+    if res.status_code not in (200, 206):
+        await res.aclose()
+        await client.aclose()
+        raise HTTPException(404, f"File {file_ref} not found or not public")
+
+    async def body():
+        try:
+            async for chunk in res.aiter_bytes():
+                yield chunk
+        finally:
+            await res.aclose()
+            await client.aclose()
+
+    return res.status_code, res.headers.get("content-type"), res.headers.get("content-range"), res.headers.get("content-length"), body()

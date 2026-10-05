@@ -182,6 +182,26 @@ async def _stream_and_cache(provider, file_ref: str, cache_key: str, content_typ
     cache.put_bytes(cache_key, b"".join(chunks), content_type)
 
 
+def _serve_range(data: bytes, content_type: str, range_header: str | None) -> Response:
+    base_headers = {"Cache-Control": "public, max-age=2592000, immutable", "Accept-Ranges": "bytes"}
+    if not range_header:
+        return Response(content=data, media_type=content_type, headers=base_headers)
+
+    size = len(data)
+    try:
+        start_s, _, end_s = range_header.removeprefix("bytes=").partition("-")
+        start = int(start_s) if start_s else 0
+        end = int(end_s) if end_s else size - 1
+    except ValueError:
+        start, end = 0, size - 1
+    end = min(end, size - 1)
+    chunk = data[start:end + 1]
+    return Response(
+        content=chunk, status_code=206, media_type=content_type,
+        headers={**base_headers, "Content-Range": f"bytes {start}-{end}/{size}", "Content-Length": str(len(chunk))},
+    )
+
+
 @app.get("/api/stream/{provider_name}/{file_ref}")
 @limiter.limit("30/minute")
 async def stream_video(request: Request, provider_name: str, file_ref: str, name: str = ""):
@@ -189,19 +209,36 @@ async def stream_video(request: Request, provider_name: str, file_ref: str, name
     provider.validate_ref(file_ref)
     cache_key = f"{provider_name}/video/{file_ref}"
     guessed_type = mimetypes.guess_type(name)[0] or "video/mp4"
+    range_header = request.headers.get("range")
 
     cached = cache.get_bytes(cache_key)
     if cached:
         if CDN_BASE_URL:
             return _cdn_redirect(cache_key)
         data, content_type = cached
-        return Response(content=data, media_type=content_type,
-                         headers={"Cache-Control": "public, max-age=2592000, immutable"})
+        return _serve_range(data, content_type, range_header)
+
+    if range_header:
+        # Forward the Range straight to the source so playback can start
+        # immediately instead of waiting for (and us proxying) the whole
+        # file — and so Safari, which refuses to play without a ranged
+        # response, works at all. Not cached: a 206 is only part of the
+        # file, and the Range is almost always present from the very first
+        # request, so caching would otherwise rarely trigger for video at
+        # all. The full-file cache still gets populated whenever a client
+        # requests the whole thing (e.g. the download button).
+        status, content_type, content_range, content_length, body = await provider.stream_range(file_ref, range_header)
+        headers = {"Accept-Ranges": "bytes", "Cache-Control": "public, max-age=2592000, immutable"}
+        if content_range:
+            headers["Content-Range"] = content_range
+        if content_length:
+            headers["Content-Length"] = content_length
+        return StreamingResponse(body, status_code=status, media_type=content_type or guessed_type, headers=headers)
 
     return StreamingResponse(
         _stream_and_cache(provider, file_ref, cache_key, guessed_type),
         media_type=guessed_type,
-        headers={"Cache-Control": "public, max-age=2592000, immutable"},
+        headers={"Cache-Control": "public, max-age=2592000, immutable", "Accept-Ranges": "bytes"},
     )
 
 
