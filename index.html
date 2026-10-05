@@ -187,6 +187,13 @@
     transition:transform 0.5s cubic-bezier(.2,.8,.2,1), filter 0.4s ease;
   }
   .frame:hover img{transform:scale(1.035); filter:saturate(1.05);}
+  .frame .video-placeholder{
+    width:100%; display:flex; align-items:center; justify-content:center;
+    background:var(--panel-raised);
+  }
+  .frame .video-placeholder svg{
+    width:34px; height:34px; stroke:var(--teal); opacity:0.85;
+  }
   .frame .tag{
     position:absolute; top:10px; left:10px;
     font-family:'JetBrains Mono',monospace; font-size:10px; letter-spacing:0.06em;
@@ -536,13 +543,18 @@
 
   function buildPhotoObjects(files, provider){
     return files.map(f => {
+      const isVideo = (f.mimeType || '').startsWith('video/');
       const takenAt = parseExifTime(f.imageMediaMetadata && f.imageMediaMetadata.time) || new Date(f.createdTime);
       const modifiedAt = new Date(f.modifiedTime || f.createdTime);
       return {
         id: f.id,
         name: f.name,
-        thumb: `/api/thumb/${provider}/${f.id}`,
-        full: `/api/full/${provider}/${f.id}`,
+        isVideo,
+        // Videos skip the thumb/full cache pipeline entirely — no generated
+        // poster frame yet, so the grid shows a generic badge instead and
+        // the only action is a direct download.
+        thumb: isVideo ? null : `/api/thumb/${provider}/${f.id}`,
+        full: isVideo ? null : `/api/full/${provider}/${f.id}`,
         downloadUrl: `/api/download/${provider}/${f.id}?name=${encodeURIComponent(f.name)}`,
         takenAt,
         modifiedAt,
@@ -642,10 +654,18 @@
       frame.className = 'frame';
       frame.dataset.index = idx;
 
-      const img = document.createElement('img');
-      img.loading = 'lazy';
-      img.src = p.thumb;
-      img.alt = p.name;
+      let media;
+      if(p.isVideo){
+        media = document.createElement('div');
+        media.className = 'video-placeholder';
+        media.style.aspectRatio = `1 / ${p.aspect}`;
+        media.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polygon points="10 8 16 12 10 16" fill="currentColor" stroke="none"/></svg>';
+      } else {
+        media = document.createElement('img');
+        media.loading = 'lazy';
+        media.src = p.thumb;
+        media.alt = p.name;
+      }
 
       const tag = document.createElement('div');
       tag.className = 'tag mono';
@@ -662,11 +682,13 @@
       select.addEventListener('click', (e)=>{ e.stopPropagation(); toggleSelected(p.id, frame, idx, e.shiftKey); });
       if(selectedIds.has(p.id)) frame.classList.add('selected');
 
-      frame.appendChild(img);
+      frame.appendChild(media);
       frame.appendChild(tag);
       frame.appendChild(dl);
       frame.appendChild(select);
-      frame.addEventListener('click', ()=> openLightbox(idx));
+      // Videos aren't previewable in the lightbox yet (no cached poster/
+      // stream) — clicking one downloads it directly instead.
+      frame.addEventListener('click', ()=> p.isVideo ? triggerDownload(p) : openLightbox(idx));
 
       els.grid.appendChild(frame);
       observer.observe(frame);
@@ -814,7 +836,13 @@
     els.lbExif.textContent = formatExif(p);
   }
   function navLightbox(dir){
-    currentIndex = (currentIndex + dir + photos.length) % photos.length;
+    // Videos have no lightbox preview (see renderGrid) — skip past them.
+    let next = currentIndex;
+    for(let i=0;i<photos.length;i++){
+      next = (next + dir + photos.length) % photos.length;
+      if(!photos[next].isVideo) break;
+    }
+    currentIndex = next;
     updateLightbox();
   }
 

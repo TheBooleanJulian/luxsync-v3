@@ -75,12 +75,12 @@ async def _list_children(parent_id: str) -> list[dict]:
     return all_files
 
 
-async def _collect_images(root_id: str) -> list[dict]:
-    """Walk the folder tree rooted at root_id, gathering every image found —
-    directly inside it or in any subfolder (galleries are often organized as
-    an event folder full of per-person/per-shoot subfolders with no images
-    of their own)."""
-    images = []
+async def _collect_media(root_id: str) -> list[dict]:
+    """Walk the folder tree rooted at root_id, gathering every image/video
+    found — directly inside it or in any subfolder (galleries are often
+    organized as an event folder full of per-person/per-shoot subfolders
+    with no media of their own)."""
+    media = []
     queue = [root_id]
     visited = 0
     while queue and visited < MAX_FOLDERS:
@@ -89,14 +89,14 @@ async def _collect_images(root_id: str) -> list[dict]:
         for child in await _list_children(folder_id):
             if child.get("mimeType") == FOLDER_MIME:
                 queue.append(child["id"])
-            elif (child.get("mimeType") or "").startswith("image/"):
-                images.append(child)
-    return images
+            elif (child.get("mimeType") or "").startswith(("image/", "video/")):
+                media.append(child)
+    return media
 
 
 async def list_gallery(source_id: str) -> dict:
     folder = await _drive_get(f"files/{source_id}", {"fields": "name"})
-    all_files = await _collect_images(source_id)
+    all_files = await _collect_media(source_id)
     return {"name": folder.get("name") or "Gallery", "files": all_files}
 
 
