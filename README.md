@@ -6,7 +6,7 @@
 
 **A premium, dependency-free photo gallery that turns any public Google Drive or Dropbox folder into a scrollable, previewable, downloadable client gallery.**
 
-![Version](https://img.shields.io/badge/version-0.8.0-00D4C8)
+![Version](https://img.shields.io/badge/version-0.9.0-00D4C8)
 ![Python](https://img.shields.io/badge/-Python-3776AB?logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/-FastAPI-009688?logo=fastapi&logoColor=white)
 ![Zeabur](https://img.shields.io/badge/-Zeabur-6C5CE7)
@@ -37,7 +37,7 @@ LuxSync v3 lets photographers hand a client a single link — the client pastes 
 - **Per-IP rate limiting** — every route is independently limited via `slowapi`; one heavy visitor degrades gracefully without burning API quota for everyone
 - **Shareable gallery links** — provider + source id encoded in the URL so a gallery view is directly linkable (old Drive-only `?folder=` links still work)
 - **Zero database, no build step** — FastAPI backend + a single self-contained `index.html`
-- **Video files in the gallery** — both providers list video files alongside photos, with a thumbnail (Drive's and Dropbox's thumbnail APIs both generate a frame from video files, no ffmpeg needed) and a play-icon overlay in the grid; clicking a video downloads it directly instead of opening the lightbox
+- **Video files in the gallery** — both providers list video files alongside photos, with a thumbnail (Drive's and Dropbox's thumbnail APIs both generate a frame from video files, no ffmpeg needed) and a play-icon overlay in the grid; clicking one opens the lightbox and plays it inline. Streamed video is cached in S3-compatible storage the same way as images (and served via the CDN redirect when configured), so repeat views don't re-fetch from the source
 
 ## Tech Stack
 
@@ -169,7 +169,8 @@ Config & testing
 
 Gallery features
 
-- Inline scrubbable video playback in the lightbox (needs HTTP range support in the image/download routes) — revisit if clients actually ask for in-browser playback rather than just delivery
+- HTTP range support on `/api/stream` for proper scrubbing — right now a video plays start-to-end but seeking ahead of the buffered range may not work in every browser; revisit if this turns out to matter in practice
+- A size cap or warning on `/api/stream` for very large videos — the first (uncached) view buffers the whole file in memory to populate the cache, which is fine for short clips but could be a problem for long-form video
 - Imgur provider (public albums, no OAuth needed — closest fit to the existing provider interface)
 - Password-protected or expiring gallery links, for clients who shouldn't get an indefinite public URL
 - Client favorites/starring, so a client can flag their picks without needing the zip download
@@ -186,6 +187,7 @@ Ops & delivery
 
 Summarised from commit history, most recent first. Versions follow `0.MINOR.PATCH` — MINOR for new features/architecture changes, PATCH for fixes.
 
+- **v0.9.0 — 2026-10-05 (inline video playback)** — Added `GET /api/stream/{provider}/{file_ref}`, which tees a video's bytes to the client while buffering them in memory, then caches the full file in S3-compatible storage the same way thumbnails/full images already are (served via the CDN redirect when `CDN_BASE_URL` is set). Clicking a video now opens the lightbox and plays it inline via a `<video>` element instead of downloading directly; the grid badge is a play icon again. No range-request support yet, so playback can't seek ahead of the buffered range.
 - **v0.8.0 — 2026-10-05 (video delivery)** — Galleries can now include video files, not just photos. Both providers list files with a video mimetype/extension alongside images, and reuse their existing thumbnail APIs to generate a frame thumbnail for video files too (no ffmpeg needed) — the grid overlays a play icon on top, falling back to a generic badge if thumbnail generation 404s for an unsupported codec/container. Clicking a video downloads it directly rather than opening it in the lightbox. Download-all and multi-select zip already worked for arbitrary file types, so no changes were needed there.
 - **v0.7.1 — 2026-09-20 (recursive galleries)** — Fixed galleries organized as an event folder full of per-person/per-shoot subfolders returning "no viewable images" because listing only checked the top level. Drive now BFS-walks the folder tree (capped at 300 folders); Dropbox's `list_folder` now passes `recursive: True` instead of `False`.
 - **v0.7.0 — 2026-08-02 (multi-provider galleries)** — Introduced a `providers/` abstraction so `main.py` no longer hardcodes Drive-specific logic; added Dropbox as a second gallery source (public shared-folder links, read via one app-owned OAuth2 token so visitors never authenticate). Gallery resolution moved from `GET /api/gallery/{folder_id}` to `POST /api/gallery` accepting a raw pasted URL (or a `{provider, source}` pair for share-link reloads), which tries each provider in turn. All image/download routes now carry a `{provider}` segment. Old `?folder=` share links still work.
