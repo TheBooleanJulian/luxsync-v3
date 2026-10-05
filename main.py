@@ -14,6 +14,7 @@ dispatch to a provider module (providers/drive.py, providers/dropbox_provider.py
 """
 
 import json
+import mimetypes
 import os
 import re
 from datetime import datetime
@@ -157,6 +158,43 @@ async def get_thumb(request: Request, provider_name: str, file_ref: str):
 @limiter.limit("120/minute")
 async def get_full(request: Request, provider_name: str, file_ref: str):
     return await _proxy_image(provider_name, file_ref, "full")
+
+
+async def _stream_and_cache(provider, file_ref: str, cache_key: str, content_type: str):
+    # Tees the source stream to the client while buffering it in memory, then
+    # writes the full thing to the cache once it's done sending — so a video
+    # is never fetched from Drive/Dropbox twice, but also never fully
+    # buffered before the client starts receiving it. Fine for short clips;
+    # a very large video held entirely in memory is the accepted tradeoff
+    # for getting free-egress CDN redirects on repeat views (see README).
+    chunks = []
+    async for chunk in provider.stream_download(file_ref):
+        chunks.append(chunk)
+        yield chunk
+    cache.put_bytes(cache_key, b"".join(chunks), content_type)
+
+
+@app.get("/api/stream/{provider_name}/{file_ref}")
+@limiter.limit("30/minute")
+async def stream_video(request: Request, provider_name: str, file_ref: str, name: str = ""):
+    provider = _get_provider(provider_name)
+    provider.validate_ref(file_ref)
+    cache_key = f"{provider_name}/video/{file_ref}"
+    guessed_type = mimetypes.guess_type(name)[0] or "video/mp4"
+
+    cached = cache.get_bytes(cache_key)
+    if cached:
+        if CDN_BASE_URL:
+            return _cdn_redirect(cache_key)
+        data, content_type = cached
+        return Response(content=data, media_type=content_type,
+                         headers={"Cache-Control": "public, max-age=2592000, immutable"})
+
+    return StreamingResponse(
+        _stream_and_cache(provider, file_ref, cache_key, guessed_type),
+        media_type=guessed_type,
+        headers={"Cache-Control": "public, max-age=2592000, immutable"},
+    )
 
 
 @app.get("/api/download/{provider_name}/{file_ref}")

@@ -273,6 +273,11 @@
     opacity:0; transition:opacity 0.3s ease;
   }
   .lb-stage img.loaded{opacity:1;}
+  .lb-stage video{
+    max-width:100%; max-height:100%;
+    box-shadow:0 30px 80px rgba(0,0,0,0.6);
+    border:1px solid var(--line);
+  }
   .lb-nav{
     position:absolute; top:0; bottom:0; width:90px;
     display:flex; align-items:center; justify-content:center;
@@ -438,6 +443,7 @@
   <div class="lb-stage">
     <button class="lb-nav prev" id="lbPrev"><svg viewBox="0 0 24 24" fill="none" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg></button>
     <img id="lbImg" alt="">
+    <video id="lbVideo" controls playsinline style="display:none"></video>
     <button class="lb-nav next" id="lbNext"><svg viewBox="0 0 24 24" fill="none" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg></button>
   </div>
   <div class="lb-bar">
@@ -462,9 +468,9 @@
   const sprocketRow = document.getElementById('sprockets');
   for(let i=0;i<80;i++){ const s=document.createElement('span'); sprocketRow.appendChild(s); }
 
-  // Video files aren't played inline (see renderGrid) — clicking one
-  // downloads it, so the grid badge is a download icon, not a play icon.
-  const VIDEO_BADGE_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><polyline points="7 11 12 16 17 11"/><line x1="5" y1="20" x2="19" y2="20"/></svg>';
+  // Clicking a video frame opens the lightbox and plays it inline (see
+  // renderGrid / updateLightbox) — the grid badge is a play icon.
+  const VIDEO_BADGE_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polygon points="10 8 16 12 10 16" fill="currentColor" stroke="none"/></svg>';
 
   // ---------- state ----------
   let photos = [];        // { id, name, thumb, full, downloadUrl, takenAt, modifiedAt }
@@ -497,6 +503,7 @@
     emptyState: document.getElementById('emptyState'),
     lightbox: document.getElementById('lightbox'),
     lbImg: document.getElementById('lbImg'),
+    lbVideo: document.getElementById('lbVideo'),
     lbPrev: document.getElementById('lbPrev'),
     lbNext: document.getElementById('lbNext'),
     lbClose: document.getElementById('lbClose'),
@@ -569,6 +576,7 @@
         // as a photo thumb — no ffmpeg needed.
         thumb: `/api/thumb/${provider}/${f.id}`,
         full: isVideo ? null : `/api/full/${provider}/${f.id}`,
+        streamUrl: isVideo ? `/api/stream/${provider}/${f.id}?name=${encodeURIComponent(f.name)}` : null,
         downloadUrl: `/api/download/${provider}/${f.id}?name=${encodeURIComponent(f.name)}`,
         takenAt,
         modifiedAt,
@@ -711,9 +719,7 @@
       frame.appendChild(tag);
       frame.appendChild(dl);
       frame.appendChild(select);
-      // Videos aren't previewable in the lightbox yet (no cached poster/
-      // stream) — clicking one downloads it directly instead.
-      frame.addEventListener('click', ()=> p.isVideo ? triggerDownload(p) : openLightbox(idx));
+      frame.addEventListener('click', ()=> openLightbox(idx));
 
       els.grid.appendChild(frame);
       observer.observe(frame);
@@ -849,25 +855,30 @@
   function closeLightbox(){
     els.lightbox.classList.remove('open');
     document.body.style.overflow = '';
+    els.lbVideo.pause();
   }
   function updateLightbox(){
     const p = photos[currentIndex];
-    els.lbImg.classList.remove('loaded');
-    const tmp = new Image();
-    tmp.onload = ()=>{ els.lbImg.src = p.full; els.lbImg.classList.add('loaded'); };
-    tmp.src = p.full;
+    els.lbVideo.pause();
+    if(p.isVideo){
+      els.lbImg.style.display = 'none';
+      els.lbVideo.style.display = '';
+      els.lbVideo.src = p.streamUrl;
+    } else {
+      els.lbVideo.style.display = 'none';
+      els.lbVideo.removeAttribute('src');
+      els.lbImg.style.display = '';
+      els.lbImg.classList.remove('loaded');
+      const tmp = new Image();
+      tmp.onload = ()=>{ els.lbImg.src = p.full; els.lbImg.classList.add('loaded'); };
+      tmp.src = p.full;
+    }
     els.lbFilename.textContent = p.name;
     els.lbCounter.innerHTML = `<b>${String(currentIndex+1).padStart(2,'0')}</b> / ${photos.length}`;
-    els.lbExif.textContent = formatExif(p);
+    els.lbExif.textContent = p.isVideo ? '' : formatExif(p);
   }
   function navLightbox(dir){
-    // Videos have no lightbox preview (see renderGrid) — skip past them.
-    let next = currentIndex;
-    for(let i=0;i<photos.length;i++){
-      next = (next + dir + photos.length) % photos.length;
-      if(!photos[next].isVideo) break;
-    }
-    currentIndex = next;
+    currentIndex = (currentIndex + dir + photos.length) % photos.length;
     updateLightbox();
   }
 
