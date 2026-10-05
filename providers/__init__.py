@@ -17,11 +17,14 @@ interchangeably:
         "id" field (an opaque, provider-generated ref used for thumb/full/
         download calls) plus "name", "createdTime", "modifiedTime",
         "mimeType", and an EXIF-shaped "imageMediaMetadata" dict (or None).
+        Video files are included too — "mimeType" starting with "video/"
+        tells the frontend to skip thumb/full and show a generic badge
+        instead (no cached poster frame yet, see README roadmap).
 
     async get_thumb(file_ref: str) -> tuple[bytes, str]
     async get_full(file_ref: str) -> tuple[bytes, str]
         Return (content_bytes, content_type) for a preview-sized / full-size
-        image.
+        image. Not called for video files.
 
     async stream_download(file_ref: str) -> AsyncIterator[bytes]
         Yield the original file's bytes in chunks.

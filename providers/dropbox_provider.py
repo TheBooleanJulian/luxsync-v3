@@ -35,6 +35,7 @@ DROPBOX_ACCESS_TOKEN = os.environ.get("DROPBOX_ACCESS_TOKEN", "")  # fallback, e
 _URL_RE = re.compile(r"https?://(?:www\.)?dropbox\.com/(?:scl/fo|sh)/\S+", re.IGNORECASE)
 _REF_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 _IMAGE_EXT_RE = re.compile(r"\.(jpe?g|png|gif|webp|heic|bmp|tiff?)$", re.IGNORECASE)
+_VIDEO_EXT_RE = re.compile(r"\.(mp4|mov|m4v|webm|avi|mkv)$", re.IGNORECASE)
 
 _token_cache = {"token": "", "expires_at": 0.0}
 
@@ -172,7 +173,8 @@ async def list_gallery(source_id: str) -> dict:
         if entry.get(".tag") != "file":
             continue
         name = entry.get("name", "")
-        if not _IMAGE_EXT_RE.search(name):
+        is_video = bool(_VIDEO_EXT_RE.search(name))
+        if not is_video and not _IMAGE_EXT_RE.search(name):
             continue
         media = (entry.get("media_info") or {}).get("metadata") or {}
         dims = media.get("dimensions") or {}
@@ -181,7 +183,7 @@ async def list_gallery(source_id: str) -> dict:
             "name": name,
             "createdTime": entry.get("client_modified"),
             "modifiedTime": entry.get("server_modified"),
-            "mimeType": "image/*",
+            "mimeType": "video/*" if is_video else "image/*",
             "imageMediaMetadata": {
                 "width": dims.get("width"),
                 "height": dims.get("height"),
