@@ -118,9 +118,17 @@ async def get_full(file_ref: str) -> tuple[bytes, str]:
 
 
 async def stream_download(file_ref: str):
-    url = f"https://drive.google.com/uc?export=download&id={file_ref}"
+    # Deliberately not drive.google.com/uc?export=download: for any file
+    # past a few MB (i.e. basically every video) that URL serves an HTML
+    # "can't scan this file for viruses" interstitial instead of the file,
+    # still with a 200 status — which main.py would then stream to the
+    # client mislabeled as video/mp4, hanging the <video> element forever.
+    # The API v3 alt=media download has no such interstitial.
+    if not DRIVE_API_KEY:
+        raise HTTPException(500, "Server is missing DRIVE_API_KEY")
+    url = f"https://www.googleapis.com/drive/v3/files/{file_ref}"
     async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
-        async with client.stream("GET", url) as res:
+        async with client.stream("GET", url, params={"alt": "media", "key": DRIVE_API_KEY}) as res:
             if res.status_code != 200:
                 raise HTTPException(404, f"File {file_ref} not found or not public")
             async for chunk in res.aiter_bytes():
