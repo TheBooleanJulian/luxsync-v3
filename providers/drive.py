@@ -59,7 +59,7 @@ MAX_FOLDERS = 300
 
 
 async def _list_children(parent_id: str) -> list[dict]:
-    fields = "nextPageToken,files(id,name,imageMediaMetadata,createdTime,modifiedTime,mimeType)"
+    fields = "nextPageToken,files(id,name,imageMediaMetadata,videoMediaMetadata,createdTime,modifiedTime,mimeType)"
     q = f"'{parent_id}' in parents and trashed = false"
     all_files = []
     page_token = ""

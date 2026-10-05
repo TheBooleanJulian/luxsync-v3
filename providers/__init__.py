@@ -18,13 +18,20 @@ interchangeably:
         download calls) plus "name", "createdTime", "modifiedTime",
         "mimeType", and an EXIF-shaped "imageMediaMetadata" dict (or None).
         Video files are included too — "mimeType" starting with "video/"
-        tells the frontend to skip thumb/full and show a generic badge
-        instead (no cached poster frame yet, see README roadmap).
+        tells the frontend to show a play-icon overlay on the thumbnail and
+        route clicks to download instead of the lightbox.
 
     async get_thumb(file_ref: str) -> tuple[bytes, str]
+        Return (content_bytes, content_type) for a preview-sized image.
+        Also called for video file refs — both Drive's and Dropbox's
+        thumbnail endpoints generate a frame thumbnail for video files, no
+        ffmpeg needed. The frontend falls back to a generic badge if this
+        404s for an unsupported video codec/container.
+
     async get_full(file_ref: str) -> tuple[bytes, str]
-        Return (content_bytes, content_type) for a preview-sized / full-size
-        image. Not called for video files.
+        Return (content_bytes, content_type) for a full-size image. Not
+        called for video files — the frontend downloads those directly
+        instead of opening the lightbox.
 
     async stream_download(file_ref: str) -> AsyncIterator[bytes]
         Yield the original file's bytes in chunks.

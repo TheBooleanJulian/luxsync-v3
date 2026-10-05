@@ -194,6 +194,16 @@
   .frame .video-placeholder svg{
     width:34px; height:34px; stroke:var(--teal); opacity:0.85;
   }
+  .frame .play-overlay{
+    position:absolute; top:50%; left:50%; transform:translate(-50%,-50%);
+    width:48px; height:48px; border-radius:50%;
+    background:rgba(5,5,8,0.55); backdrop-filter:blur(2px);
+    display:flex; align-items:center; justify-content:center;
+    pointer-events:none;
+  }
+  .frame .play-overlay svg{
+    width:22px; height:22px; stroke:var(--teal); opacity:0.95;
+  }
   .frame .tag{
     position:absolute; top:10px; left:10px;
     font-family:'JetBrains Mono',monospace; font-size:10px; letter-spacing:0.06em;
@@ -534,7 +544,7 @@
   }
 
   function getAspect(f){
-    const meta = f.imageMediaMetadata;
+    const meta = f.imageMediaMetadata || f.videoMediaMetadata;
     if(!meta || !meta.width || !meta.height) return 0.75;
     let w = meta.width, h = meta.height;
     if(meta.rotation === 1 || meta.rotation === 3){ const t = w; w = h; h = t; }
@@ -550,10 +560,10 @@
         id: f.id,
         name: f.name,
         isVideo,
-        // Videos skip the thumb/full cache pipeline entirely — no generated
-        // poster frame yet, so the grid shows a generic badge instead and
-        // the only action is a direct download.
-        thumb: isVideo ? null : `/api/thumb/${provider}/${f.id}`,
+        // Both Drive's and Dropbox's thumbnail APIs generate a frame
+        // thumbnail for video files too, so this is fetched the same way
+        // as a photo thumb — no ffmpeg needed.
+        thumb: `/api/thumb/${provider}/${f.id}`,
         full: isVideo ? null : `/api/full/${provider}/${f.id}`,
         downloadUrl: `/api/download/${provider}/${f.id}?name=${encodeURIComponent(f.name)}`,
         takenAt,
@@ -654,17 +664,22 @@
       frame.className = 'frame';
       frame.dataset.index = idx;
 
-      let media;
+      const media = document.createElement('img');
+      media.loading = 'lazy';
+      media.src = p.thumb;
+      media.alt = p.name;
       if(p.isVideo){
-        media = document.createElement('div');
-        media.className = 'video-placeholder';
-        media.style.aspectRatio = `1 / ${p.aspect}`;
-        media.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polygon points="10 8 16 12 10 16" fill="currentColor" stroke="none"/></svg>';
-      } else {
-        media = document.createElement('img');
-        media.loading = 'lazy';
-        media.src = p.thumb;
-        media.alt = p.name;
+        // Thumbnail generation isn't guaranteed for every video codec/
+        // container the source supports — fall back to a generic badge
+        // if the source couldn't produce a frame.
+        media.onerror = ()=>{
+          const placeholder = Object.assign(document.createElement('div'), {
+            className: 'video-placeholder',
+            innerHTML: '<svg viewBox="0 0 24 24" fill="none" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polygon points="10 8 16 12 10 16" fill="currentColor" stroke="none"/></svg>',
+          });
+          placeholder.style.aspectRatio = `1 / ${p.aspect}`;
+          media.replaceWith(placeholder);
+        };
       }
 
       const tag = document.createElement('div');
@@ -683,6 +698,12 @@
       if(selectedIds.has(p.id)) frame.classList.add('selected');
 
       frame.appendChild(media);
+      if(p.isVideo){
+        const play = document.createElement('div');
+        play.className = 'play-overlay';
+        play.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polygon points="10 8 16 12 10 16" fill="currentColor" stroke="none"/></svg>';
+        frame.appendChild(play);
+      }
       frame.appendChild(tag);
       frame.appendChild(dl);
       frame.appendChild(select);
