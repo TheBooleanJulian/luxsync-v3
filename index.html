@@ -359,6 +359,31 @@
   @media(prefers-reduced-motion:reduce){
     *{animation-duration:0.01ms !important; transition-duration:0.01ms !important;}
   }
+
+  /* ---------- email gate ---------- */
+  .gate{
+    position:fixed; inset:0; z-index:200; display:none; align-items:center; justify-content:center;
+    background:rgba(3,3,5,0.82); backdrop-filter:blur(6px); padding:20px;
+  }
+  .gate.open{display:flex;}
+  .gate-card{
+    width:100%; max-width:420px; background:var(--panel); border:1px solid var(--line-strong);
+    border-radius:var(--radius); padding:28px; position:relative;
+  }
+  .gate-card h2{
+    font-family:'JetBrains Mono',monospace; font-size:12px; letter-spacing:0.18em;
+    text-transform:uppercase; color:var(--teal); margin-bottom:14px;
+  }
+  .gate-card p{font-size:14px; line-height:1.6; color:var(--ink-dim); margin-bottom:18px;}
+  .gate-card input[type="email"]{
+    width:100%; background:var(--void); border:1px solid var(--line-strong); border-radius:var(--radius);
+    color:var(--ink); padding:13px 14px; font-family:'JetBrains Mono',monospace; font-size:13px; outline:none;
+  }
+  .gate-card input[type="email"]:focus{border-color:var(--teal);}
+  .gate-optin{display:flex; gap:10px; align-items:flex-start; margin:16px 0 4px; font-size:13px; color:var(--ink-dim); line-height:1.5; cursor:pointer;}
+  .gate-optin input{accent-color:var(--teal); margin-top:3px;}
+  .gate-error{color:#ff6b6b; font-size:12px; font-family:'JetBrains Mono',monospace; margin-top:8px; display:none;}
+  .gate-actions{display:flex; justify-content:flex-end; gap:10px; margin-top:20px;}
 </style>
 </head>
 <body>
@@ -458,6 +483,21 @@
       <button class="btn" id="lbDownload">Download</button>
     </div>
   </div>
+</div>
+
+<!-- Email gate: shown before the first download -->
+<div class="gate" id="gate">
+  <form class="gate-card" id="gateForm" novalidate>
+    <h2>Download</h2>
+    <p>Please enter your email to download. It's recorded with your download so the photographer knows who received the files.</p>
+    <input type="email" id="gateEmail" placeholder="Your email" autocomplete="email" required>
+    <div class="gate-error" id="gateError">Enter a valid email address.</div>
+    <label class="gate-optin"><input type="checkbox" id="gateOptin"> <span>Send me news and promotions from Accurova.</span></label>
+    <div class="gate-actions">
+      <button type="button" class="btn" id="gateCancel">Cancel</button>
+      <button type="submit" class="btn primary">Continue</button>
+    </div>
+  </form>
 </div>
 
 <script>
@@ -730,9 +770,49 @@
     relayout();
   }
 
+  // ---------- email gate ----------
+  // Every download carries the visitor's email; the server rejects downloads
+  // without a valid one and logs them for the /admin dashboard. Remembered in
+  // localStorage so each visitor is only asked once per browser.
+  let visitor = null;
+  try { visitor = JSON.parse(localStorage.getItem('luxsync_visitor')); } catch(e){}
+  const EMAIL_RE = /^[^@\s]{1,64}@[^@\s]+\.[^@\s]{2,}$/;
+  let gateCallback = null;
+
+  function requireEmail(cb){
+    if(visitor && EMAIL_RE.test(visitor.email)){ cb(visitor); return; }
+    gateCallback = cb;
+    document.getElementById('gateError').style.display = 'none';
+    document.getElementById('gate').classList.add('open');
+    document.getElementById('gateEmail').focus();
+  }
+  function closeGate(){
+    document.getElementById('gate').classList.remove('open');
+    gateCallback = null;
+  }
+  document.getElementById('gateCancel').addEventListener('click', closeGate);
+  document.getElementById('gateForm').addEventListener('submit', (e)=>{
+    e.preventDefault();
+    const email = document.getElementById('gateEmail').value.trim();
+    if(!EMAIL_RE.test(email)){ document.getElementById('gateError').style.display = 'block'; return; }
+    visitor = { email, optin: document.getElementById('gateOptin').checked };
+    try { localStorage.setItem('luxsync_visitor', JSON.stringify(visitor)); } catch(err){}
+    const cb = gateCallback;
+    closeGate();
+    if(cb) cb(visitor);
+  });
+
   function triggerDownload(p){
+    requireEmail((v)=> startSingleDownload(p, v));
+  }
+
+  function startSingleDownload(p, v){
+    const params = new URLSearchParams({
+      email: v.email, optin: v.optin ? '1' : '0',
+      source: currentSourceId || '', gallery: currentGalleryName,
+    });
     const a = document.createElement('a');
-    a.href = p.downloadUrl;
+    a.href = `${p.downloadUrl}&${params}`;
     a.download = p.name;
     a.target = '_blank';
     a.rel = 'noopener';
@@ -771,7 +851,7 @@
     els.downloadSelectedBtn.disabled = n === 0;
   }
 
-  function downloadAsZip(list){
+  function downloadAsZip(list, v, kind, part, total){
     const form = document.createElement('form');
     form.method = 'POST';
     form.action = '/api/download-zip';
@@ -792,6 +872,15 @@
     providerInput.name = 'provider';
     providerInput.value = currentProvider;
     form.appendChild(providerInput);
+    const extra = {
+      email: v.email, optin: v.optin ? '1' : '0', source: currentSourceId || '',
+      gallery_name: currentGalleryName, kind, part, total,
+    };
+    for(const [name, value] of Object.entries(extra)){
+      const f = document.createElement('input');
+      f.type = 'hidden'; f.name = name; f.value = value;
+      form.appendChild(f);
+    }
     document.body.appendChild(form);
     form.submit();
     form.remove();
@@ -802,24 +891,28 @@
     const selected = photos.filter(p=> selectedIds.has(p.id));
     if(selected.length === 0) return;
     if(selected.length === 1) triggerDownload(selected[0]);
-    else downloadAsZip(selected);
+    else requireEmail((v)=> downloadAsZip(selected, v, 'selected', 0, selected.length));
   }
 
   const MAX_ZIP_FILES = 200;
 
-  async function downloadAll(){
+  function downloadAll(){
     if(photos.length === 0) return;
+    requireEmail(runDownloadAll);
+  }
+
+  async function runDownloadAll(v){
     els.downloadAllBtn.disabled = true;
     const original = els.downloadAllBtn.textContent;
 
     if(photos.length <= MAX_ZIP_FILES){
       els.downloadAllBtn.textContent = 'Zipping…';
-      downloadAsZip(photos);
+      downloadAsZip(photos, v, 'all', 0, photos.length);
     } else {
       const chunks = Math.ceil(photos.length / MAX_ZIP_FILES);
       for(let i=0;i<chunks;i++){
         els.downloadAllBtn.textContent = `Zipping ${i+1}/${chunks}`;
-        downloadAsZip(photos.slice(i * MAX_ZIP_FILES, (i+1) * MAX_ZIP_FILES));
+        downloadAsZip(photos.slice(i * MAX_ZIP_FILES, (i+1) * MAX_ZIP_FILES), v, 'all', i, photos.length);
         await new Promise(r=>setTimeout(r, 600));
       }
     }
