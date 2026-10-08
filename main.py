@@ -13,16 +13,20 @@ dispatch to a provider module (providers/drive.py, providers/dropbox_provider.py
     to the source, so everything is rate-limited per IP in one place.
 """
 
+import csv
+import io
 import json
 import mimetypes
 import os
 import re
+import secrets
 from datetime import datetime
 from stat import S_IFREG
 
-from fastapi import FastAPI, Form, HTTPException, Request
+from fastapi import Depends, FastAPI, Form, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, RedirectResponse, Response, StreamingResponse
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -31,6 +35,7 @@ from slowapi.util import get_remote_address
 from stream_zip import ZIP_32, async_stream_zip
 
 import cache
+import downloads
 import providers.drive as drive_provider
 import providers.dropbox_provider as dropbox_provider
 
@@ -46,6 +51,9 @@ FOLDER_CACHE_TTL = int(os.environ.get("FOLDER_CACHE_TTL_SECONDS", "600"))
 # only for requests that actually route through Cloudflare's proxy).
 CDN_BASE_URL = os.environ.get("CDN_BASE_URL", "").rstrip("/")
 MAX_ZIP_FILES = 200
+
+# Password for /admin (HTTP Basic, any username). Unset = admin disabled.
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
 
 limiter = Limiter(key_func=get_remote_address)
 app = FastAPI()
@@ -199,9 +207,17 @@ async def stream_video(request: Request, provider_name: str, file_ref: str, name
 
 @app.get("/api/download/{provider_name}/{file_ref}")
 @limiter.limit("60/minute")
-async def download_file(request: Request, provider_name: str, file_ref: str, name: str = "download"):
+async def download_file(
+    request: Request, provider_name: str, file_ref: str, name: str = "download",
+    email: str = "", optin: int = 0, source: str = "", gallery: str = "",
+):
     provider = _get_provider(provider_name)
     provider.validate_ref(file_ref)
+    clean_email = _require_email(email)
+    downloads.log_download(
+        email=clean_email, optin=bool(optin), provider=provider_name, source=source,
+        gallery_name=gallery, kind="photo", filenames=[name], ip=get_remote_address(request),
+    )
 
     safe_name = name.replace('"', "")
     return StreamingResponse(
@@ -209,6 +225,13 @@ async def download_file(request: Request, provider_name: str, file_ref: str, nam
         media_type="application/octet-stream",
         headers={"Content-Disposition": f'attachment; filename="{safe_name}"'},
     )
+
+
+def _require_email(raw: str) -> str:
+    email = downloads.normalize_email(raw)
+    if email is None:
+        raise HTTPException(400, "A valid email is required to download")
+    return email
 
 
 def _dedupe_names(names: list) -> list:
@@ -244,8 +267,18 @@ async def download_zip(
     files: str = Form(...),
     zip_name: str = Form("gallery"),
     provider: str = Form("drive"),
+    email: str = Form(""),
+    optin: int = Form(0),
+    source: str = Form(""),
+    gallery_name: str = Form(""),
+    kind: str = Form("selected"),
+    part: int = Form(0),
+    total: int = Form(0),
 ):
     provider_mod = _get_provider(provider)
+    clean_email = _require_email(email)
+    if kind not in ("selected", "all"):
+        raise HTTPException(400, "Invalid kind")
     try:
         file_list = json.loads(files)
     except ValueError:
@@ -264,6 +297,15 @@ async def download_zip(
         names.append(item.get("name") or file_ref)
     names = _dedupe_names(names)
 
+    # A very large "Download All" is sent as several zips; log it once (part 0)
+    # with the full file count rather than once per chunk.
+    if part == 0:
+        downloads.log_download(
+            email=clean_email, optin=bool(optin), provider=provider, source=source,
+            gallery_name=gallery_name, kind=kind, filenames=names,
+            file_count=max(total, len(names)), ip=get_remote_address(request),
+        )
+
     async def member_content(file_ref: str):
         async for chunk in provider_mod.stream_download(file_ref):
             yield chunk
@@ -279,6 +321,71 @@ async def download_zip(
         async_stream_zip(members()),
         media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="{zip_filename}"'},
+    )
+
+
+# ---------- admin dashboard ----------
+_basic = HTTPBasic(auto_error=False)
+
+
+def _require_admin(credentials: HTTPBasicCredentials | None = Depends(_basic)):
+    if not ADMIN_PASSWORD:
+        raise HTTPException(404, "Not found")
+    if credentials is None or not secrets.compare_digest(
+        credentials.password.encode(), ADMIN_PASSWORD.encode()
+    ):
+        raise HTTPException(401, "Unauthorized", headers={"WWW-Authenticate": 'Basic realm="LuxSync admin"'})
+
+
+@app.get("/admin", dependencies=[Depends(_require_admin)])
+@limiter.limit("30/minute")
+async def serve_admin(request: Request):
+    return FileResponse("admin.html", headers={"Cache-Control": "no-store"})
+
+
+@app.get("/api/admin/stats", dependencies=[Depends(_require_admin)])
+@limiter.limit("60/minute")
+async def admin_stats(request: Request):
+    return downloads.stats()
+
+
+@app.get("/api/admin/downloads", dependencies=[Depends(_require_admin)])
+@limiter.limit("60/minute")
+async def admin_downloads(request: Request, view: str = "gallery", q: str = "",
+                          limit: int = 100, offset: int = 0):
+    return downloads.list_downloads(view, q.strip(), min(max(limit, 1), 500), max(offset, 0))
+
+
+@app.get("/api/admin/emails", dependencies=[Depends(_require_admin)])
+@limiter.limit("60/minute")
+async def admin_emails(request: Request, q: str = ""):
+    return downloads.list_emails(q.strip())
+
+
+def _csv_cell(value) -> str:
+    # Emails/filenames are visitor-supplied; stop spreadsheets treating them as formulas.
+    text = str(value)
+    return "'" + text if text.startswith(("=", "+", "-", "@", "\t", "\r")) else text
+
+
+@app.get("/api/admin/export.csv", dependencies=[Depends(_require_admin)])
+@limiter.limit("10/minute")
+async def admin_export(request: Request, view: str = "emails"):
+    out = io.StringIO()
+    writer = csv.writer(out)
+    if view == "emails":
+        writer.writerow(["email", "newsletter_optin", "downloads", "galleries", "first_seen", "last_seen"])
+        for r in downloads.list_emails():
+            writer.writerow([_csv_cell(r["email"]), r["optin"], r["downloads"], r["galleries"],
+                             r["first_seen"], r["last_seen"]])
+    else:
+        writer.writerow(["time_utc", "email", "newsletter_optin", "gallery", "type", "files", "filenames"])
+        for r in downloads.list_downloads("photo", limit=1_000_000)["items"] +                  downloads.list_downloads("gallery", limit=1_000_000)["items"]:
+            writer.writerow([r["ts"], _csv_cell(r["email"]), r["optin"], _csv_cell(r["gallery_name"]),
+                             r["kind"], r["file_count"], _csv_cell("; ".join(r["filenames"]))])
+    return Response(
+        out.getvalue(), media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="luxsync-{view}.csv"'},
     )
 
 

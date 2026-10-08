@@ -36,7 +36,8 @@ LuxSync v3 lets photographers hand a client a single link — the client pastes 
 - **Single-file download** — selecting exactly one photo skips the zip and streams the original directly
 - **Per-IP rate limiting** — every route is independently limited via `slowapi`; one heavy visitor degrades gracefully without burning API quota for everyone
 - **Shareable gallery links** — provider + source id encoded in the URL so a gallery view is directly linkable (old Drive-only `?folder=` links still work)
-- **Zero database, no build step** — FastAPI backend + a single self-contained `index.html`
+- **Email-gated downloads + admin dashboard** — visitors enter an email once (remembered per browser) before any download; every download is logged to SQLite and viewable at `/admin` (see [Download tracking](#download-tracking))
+- **No build step** — FastAPI backend + single self-contained HTML files (`index.html`, `admin.html`)
 - **Video files in the gallery** — both providers list video files alongside photos, with a thumbnail (Drive's and Dropbox's thumbnail APIs both generate a frame from video files, no ffmpeg needed) and a play-icon overlay in the grid; clicking one opens the lightbox and plays it inline. Streamed video is cached in S3-compatible storage the same way as images (and served via the CDN redirect when configured), so repeat views don't re-fetch from the source
 
 ## Tech Stack
@@ -78,6 +79,20 @@ python main.py
 | `S3_REGION` | ❌ | Region passed to the S3 client (default `auto`) |
 | `CDN_BASE_URL` | ❌ | Cloudflare-proxied base URL for cached images (e.g. `https://cdn.yourdomain.com/file/luxsync-cache`). When set, cache-hit image requests are redirected to the CDN instead of proxied. |
 | `FOLDER_CACHE_TTL_SECONDS` | ❌ | How long to cache folder listings (default `600`) |
+| `ADMIN_PASSWORD` | ❌ | Password for the `/admin` dashboard (HTTP Basic, any username). Unset = dashboard disabled |
+| `DATA_DIR` | ❌ | Directory for the download-log SQLite file (default `data`) |
+| `IP_HASH_SALT` | ❌ | Salt for hashing visitor IPs in the log (defaults to `ADMIN_PASSWORD`) |
+
+### Download tracking
+
+Before a visitor's first download the gallery asks for an email (plus an optional newsletter opt-in checkbox) and remembers it in that browser's `localStorage`. The download endpoints reject requests without a syntactically valid email, then log one row per download — time, email, gallery, type (single photo / selection / whole gallery), filenames, and a salted IP hash — to `DATA_DIR/luxsync.db` (SQLite).
+
+Open `/admin` (set `ADMIN_PASSWORD` first) for the **Gallery** and **Single Photo** activity tabs, a deduplicated **Emails** list with opt-in status, search, and CSV export. A chunked "Download All" (over 200 files) is logged once.
+
+Notes:
+- **Persistence:** Zeabur's container disk is ephemeral. Mount a persistent volume at `DATA_DIR`, or the log resets on every deploy.
+- **Emails are not verified** — the gate is a record, not an access control; a visitor can type any address.
+- Emails are personal data (PDPA) — only collect them with a clear purpose, and honor the opt-in flag when emailing.
 
 ### Dropbox setup
 
@@ -119,7 +134,10 @@ luxsync-v3/
 │   ├── drive.py                               # Google Drive (API key)
 │   └── dropbox_provider.py                    # Dropbox (OAuth2 app token)
 ├── cache.py                                   # S3-compatible cache (get/put bytes + JSON)
+├── downloads.py                               # SQLite download log (emails) for the admin dashboard
 ├── index.html                                 # Single-file frontend (no build step)
+├── admin.html                                 # Single-file admin dashboard, served at /admin
+├── tests/                                     # python -m unittest discover tests
 ├── requirements.txt
 ├── Procfile                                   # Zeabur / Heroku process definition
 ├── .env.example                               # Required/optional env vars

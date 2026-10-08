@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>LuxSync Admin</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --void:#050508; --panel:#0a0e14; --panel-raised:#10151d;
+    --ink:#edeef2; --ink-dim:#8a8f9c; --ink-faint:#4c515c;
+    --teal:#00d4c8; --teal-dim:rgba(0,212,200,0.14); --gold:#f5c842;
+    --line:rgba(255,255,255,0.08); --line-strong:rgba(255,255,255,0.16);
+    --radius:2px;
+  }
+  *{box-sizing:border-box;margin:0;padding:0;}
+  html,body{background:var(--void);color:var(--ink);}
+  body{font-family:'Space Grotesk',sans-serif;min-height:100vh;}
+  .mono{font-family:'JetBrains Mono',monospace;}
+  .wrap{max-width:1200px;margin:0 auto;padding:32px clamp(16px,4vw,48px) 64px;}
+  header{display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:12px;margin-bottom:28px;}
+  h1{font-size:22px;font-weight:600;}
+  h1 em{color:var(--teal);font-style:normal;}
+  .eyebrow{font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:0.18em;text-transform:uppercase;color:var(--ink-faint);}
+
+  .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:32px;}
+  .stat{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:16px 18px;}
+  .stat .n{font-family:'JetBrains Mono',monospace;font-size:26px;color:var(--gold);}
+  .stat .l{font-size:12px;color:var(--ink-dim);margin-top:4px;}
+
+  .bar{display:flex;flex-wrap:wrap;gap:12px;align-items:center;justify-content:space-between;margin-bottom:16px;}
+  .tabs{display:flex;gap:4px;border-bottom:1px solid var(--line);flex:1;min-width:260px;}
+  .tab{
+    background:none;border:none;color:var(--ink-dim);font-family:inherit;font-size:14px;
+    padding:10px 16px;cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-1px;
+  }
+  .tab:hover{color:var(--ink);}
+  .tab.active{color:var(--ink);border-bottom-color:var(--teal);}
+  .tools{display:flex;gap:8px;flex-wrap:wrap;}
+  input[type="search"]{
+    background:var(--panel);border:1px solid var(--line-strong);border-radius:var(--radius);color:var(--ink);
+    padding:8px 12px;font-family:'JetBrains Mono',monospace;font-size:12px;outline:none;width:220px;
+  }
+  input[type="search"]:focus{border-color:var(--teal);}
+  .btn{
+    font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:0.08em;text-transform:uppercase;
+    background:transparent;color:var(--ink);border:1px solid var(--line-strong);border-radius:var(--radius);
+    padding:8px 14px;cursor:pointer;
+  }
+  .btn:hover{border-color:var(--teal);color:var(--teal);background:var(--teal-dim);}
+  .btn:disabled{opacity:0.4;cursor:default;}
+
+  .table-wrap{overflow-x:auto;border:1px solid var(--line);border-radius:var(--radius);background:var(--panel);}
+  table{width:100%;border-collapse:collapse;font-size:13.5px;}
+  th{
+    text-align:left;font-family:'JetBrains Mono',monospace;font-size:10.5px;letter-spacing:0.12em;
+    text-transform:uppercase;color:var(--ink-faint);font-weight:500;padding:12px 16px;border-bottom:1px solid var(--line);white-space:nowrap;
+  }
+  td{padding:12px 16px;border-bottom:1px solid var(--line);vertical-align:top;}
+  tr:last-child td{border-bottom:none;}
+  td.email{font-weight:500;word-break:break-all;}
+  td.mono,.dim{color:var(--ink-dim);}
+  td.mono{font-size:12px;white-space:nowrap;}
+  .gal{color:var(--teal);}
+  .badge{
+    font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:0.06em;color:var(--gold);
+    border:1px solid rgba(245,200,66,0.4);padding:2px 6px;border-radius:var(--radius);white-space:nowrap;
+  }
+  .files{font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--ink-dim);word-break:break-all;}
+  .empty{padding:48px 16px;text-align:center;color:var(--ink-dim);}
+  .foot{display:flex;justify-content:space-between;align-items:center;margin-top:14px;font-size:12px;color:var(--ink-dim);}
+  .err{color:#ff6b6b;margin-bottom:16px;font-family:'JetBrains Mono',monospace;font-size:12px;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Lux<em>Sync</em> Admin</h1>
+    <div class="eyebrow">Download activity</div>
+  </header>
+
+  <div class="err" id="err" hidden></div>
+  <div class="stats" id="stats"></div>
+
+  <div class="bar">
+    <div class="tabs" id="tabs">
+      <button class="tab active" data-view="gallery">Gallery</button>
+      <button class="tab" data-view="photo">Single Photo</button>
+      <button class="tab" data-view="emails">Emails</button>
+    </div>
+    <div class="tools">
+      <input type="search" id="q" placeholder="Search email, gallery, file…">
+      <button class="btn" id="exportBtn">Export CSV</button>
+    </div>
+  </div>
+
+  <div class="table-wrap"><table id="table"></table></div>
+  <div class="foot"><span id="count"></span><button class="btn" id="more" hidden>Load more</button></div>
+</div>
+
+<script>
+(function(){
+  'use strict';
+  const PAGE = 100;
+  let view = 'gallery', offset = 0, items = [], total = 0, timer = null;
+
+  const $ = (id)=> document.getElementById(id);
+  const fmtDate = (iso)=> new Date(iso).toLocaleString('en-SG', {day:'numeric', month:'short', year:'numeric', hour:'numeric', minute:'2-digit'});
+
+  function el(tag, cls, text){
+    const e = document.createElement(tag);
+    if(cls) e.className = cls;
+    if(text !== undefined) e.textContent = text;
+    return e;
+  }
+
+  async function api(path){
+    const res = await fetch(path);
+    if(!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+    return res.json();
+  }
+
+  function showErr(msg){ const e = $('err'); e.textContent = msg; e.hidden = !msg; }
+
+  async function loadStats(){
+    const s = await api('/api/admin/stats');
+    const wrap = $('stats');
+    wrap.replaceChildren();
+    [['downloads','Downloads'],['emails','Unique emails'],['optins','Newsletter opt-ins'],['galleries','Galleries']].forEach(([k,label])=>{
+      const box = el('div','stat');
+      box.append(el('div','n',s[k]), el('div','l',label));
+      wrap.append(box);
+    });
+  }
+
+  function header(cols){
+    const tr = el('tr');
+    cols.forEach(c=> tr.append(el('th','',c)));
+    const thead = el('thead'); thead.append(tr);
+    return thead;
+  }
+
+  function render(){
+    const table = $('table');
+    table.replaceChildren();
+    const tbody = el('tbody');
+
+    if(view === 'emails'){
+      table.append(header(['Email','Newsletter','Downloads','Galleries','First seen','Last seen']));
+      items.forEach(r=>{
+        const tr = el('tr');
+        tr.append(el('td','email',r.email), td(r.optin ? el('span','badge','OPTED IN') : el('span','dim','—')),
+          el('td','mono',r.downloads), el('td','mono',r.galleries), el('td','mono',fmtDate(r.first_seen)), el('td','mono',fmtDate(r.last_seen)));
+        tbody.append(tr);
+      });
+    } else if(view === 'photo'){
+      table.append(header(['Email','Gallery','Filename','Date downloaded']));
+      items.forEach(r=>{
+        const tr = el('tr');
+        tr.append(el('td','email',r.email), el('td','gal',r.gallery_name || r.source),
+          el('td','files',r.filenames[0] || ''), el('td','mono',fmtDate(r.ts)));
+        tbody.append(tr);
+      });
+    } else {
+      table.append(header(['Email','Gallery','Type','Date downloaded']));
+      items.forEach(r=>{
+        const tr = el('tr');
+        const type = r.kind === 'all' ? `Whole gallery (${r.file_count})` : `Selection (${r.file_count})`;
+        tr.append(el('td','email',r.email), el('td','gal',r.gallery_name || r.source),
+          td(el('span','badge',type)), el('td','mono',fmtDate(r.ts)));
+        tbody.append(tr);
+      });
+    }
+    table.append(tbody);
+
+    if(items.length === 0){
+      const empty = el('div','empty','No downloads yet.');
+      table.append(el('caption')); table.querySelector('caption').append(empty);
+    }
+    $('count').textContent = view === 'emails' ? `${items.length} emails` : `${items.length} of ${total}`;
+    $('more').hidden = view === 'emails' || items.length >= total;
+  }
+
+  function td(child){ const t = el('td'); t.append(child); return t; }
+
+  async function load(reset){
+    if(reset){ offset = 0; items = []; }
+    const q = encodeURIComponent($('q').value.trim());
+    try {
+      showErr('');
+      if(view === 'emails'){
+        items = await api(`/api/admin/emails?q=${q}`);
+        total = items.length;
+      } else {
+        const data = await api(`/api/admin/downloads?view=${view}&q=${q}&limit=${PAGE}&offset=${offset}`);
+        items = items.concat(data.items);
+        total = data.total;
+        offset = items.length;
+      }
+      render();
+    } catch(e){ showErr(`Failed to load: ${e.message}`); }
+  }
+
+  $('tabs').addEventListener('click', (e)=>{
+    const tab = e.target.closest('.tab');
+    if(!tab) return;
+    document.querySelectorAll('.tab').forEach(t=> t.classList.toggle('active', t === tab));
+    view = tab.dataset.view;
+    load(true);
+  });
+  $('q').addEventListener('input', ()=>{ clearTimeout(timer); timer = setTimeout(()=> load(true), 250); });
+  $('more').addEventListener('click', ()=> load(false));
+  $('exportBtn').addEventListener('click', ()=>{
+    location.href = `/api/admin/export.csv?view=${view === 'emails' ? 'emails' : 'downloads'}`;
+  });
+
+  loadStats().catch(e=> showErr(`Failed to load: ${e.message}`));
+  load(true);
+})();
+</script>
+</body>
+</html>
