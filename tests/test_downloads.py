@@ -69,6 +69,15 @@ class DownloadTracking(unittest.TestCase):
         self.assertEqual(self.client.get("/api/admin/stats", auth=self.auth).status_code, 200)
         self.assertEqual(self.client.get("/admin", auth=self.auth).status_code, 200)
 
+    def test_admin_username_enforced_when_set(self):
+        main.ADMIN_USERNAME = "julian"
+        try:
+            self.assertEqual(self.client.get("/api/admin/stats", auth=("other", "secret")).status_code, 401)
+            self.assertEqual(self.client.get("/api/admin/stats", auth=("julian", "wrong")).status_code, 401)
+            self.assertEqual(self.client.get("/api/admin/stats", auth=("julian", "secret")).status_code, 200)
+        finally:
+            main.ADMIN_USERNAME = ""
+
     def test_csv_export_neutralizes_formulas(self):
         downloads.log_download(email="=cmd@x.com", optin=False, provider="drive", source="S",
                                gallery_name="G", kind="photo", filenames=["a.jpg"])

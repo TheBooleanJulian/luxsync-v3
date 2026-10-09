@@ -79,7 +79,8 @@ python main.py
 | `S3_REGION` | ❌ | Region passed to the S3 client (default `auto`) |
 | `CDN_BASE_URL` | ❌ | Cloudflare-proxied base URL for cached images (e.g. `https://cdn.yourdomain.com/file/luxsync-cache`). When set, cache-hit image requests are redirected to the CDN instead of proxied. |
 | `FOLDER_CACHE_TTL_SECONDS` | ❌ | How long to cache folder listings (default `600`) |
-| `ADMIN_PASSWORD` | ❌ | Password for the `/admin` dashboard (HTTP Basic, any username). Unset = dashboard disabled |
+| `ADMIN_PASSWORD` | ❌ | Password for the `/admin` dashboard (HTTP Basic). Unset = dashboard disabled |
+| `ADMIN_USERNAME` | ❌ | Optional username for `/admin`. If set, it must match; if unset, any username is accepted |
 | `DATA_DIR` | ❌ | Directory for the download-log SQLite file (default `data`) |
 | `IP_HASH_SALT` | ❌ | Salt for hashing visitor IPs in the log (defaults to `ADMIN_PASSWORD`) |
 
