@@ -52,8 +52,11 @@ FOLDER_CACHE_TTL = int(os.environ.get("FOLDER_CACHE_TTL_SECONDS", "600"))
 CDN_BASE_URL = os.environ.get("CDN_BASE_URL", "").rstrip("/")
 MAX_ZIP_FILES = 200
 
-# Password for /admin (HTTP Basic, any username). Unset = admin disabled.
+# Credentials for /admin (HTTP Basic). ADMIN_PASSWORD unset = admin disabled.
+# ADMIN_USERNAME is optional: when set it must match too, otherwise any
+# username is accepted.
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
+ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "")
 
 limiter = Limiter(key_func=get_remote_address)
 app = FastAPI()
@@ -368,9 +371,13 @@ _basic = HTTPBasic(auto_error=False)
 def _require_admin(credentials: HTTPBasicCredentials | None = Depends(_basic)):
     if not ADMIN_PASSWORD:
         raise HTTPException(404, "Not found")
-    if credentials is None or not secrets.compare_digest(
-        credentials.password.encode(), ADMIN_PASSWORD.encode()
-    ):
+    if credentials is None:
+        raise HTTPException(401, "Unauthorized", headers={"WWW-Authenticate": 'Basic realm="LuxSync admin"'})
+    password_ok = secrets.compare_digest(credentials.password.encode(), ADMIN_PASSWORD.encode())
+    username_ok = not ADMIN_USERNAME or secrets.compare_digest(
+        credentials.username.encode(), ADMIN_USERNAME.encode()
+    )
+    if not (password_ok and username_ok):
         raise HTTPException(401, "Unauthorized", headers={"WWW-Authenticate": 'Basic realm="LuxSync admin"'})
 
 
