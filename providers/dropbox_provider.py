@@ -222,3 +222,35 @@ async def stream_download(file_ref: str):
     shared_url, path = _parse_file_ref(file_ref)
     async for chunk in _content_stream("sharing/get_shared_link_file", {"url": shared_url, "path": path}):
         yield chunk
+
+
+async def stream_range(file_ref: str, range_header: str | None):
+    """Like stream_download, but forwards an incoming Range header to
+    Dropbox's content API so the client gets a real 206 response. Without
+    this, <video> has to wait for the entire file before playback can
+    start, and Safari refuses to play at all without range support."""
+    shared_url, path = _parse_file_ref(file_ref)
+    token = await _access_token()
+    req_headers = {
+        "Authorization": f"Bearer {token}",
+        "Dropbox-API-Arg": json.dumps({"url": shared_url, "path": path}),
+    }
+    if range_header:
+        req_headers["Range"] = range_header
+    client = httpx.AsyncClient(timeout=60)
+    req = client.build_request("POST", "https://content.dropboxapi.com/2/sharing/get_shared_link_file", headers=req_headers)
+    res = await client.send(req, stream=True)
+    if res.status_code not in (200, 206):
+        await res.aclose()
+        await client.aclose()
+        raise HTTPException(404, "File not found or link no longer public")
+
+    async def body():
+        try:
+            async for chunk in res.aiter_bytes():
+                yield chunk
+        finally:
+            await res.aclose()
+            await client.aclose()
+
+    return res.status_code, res.headers.get("content-type"), res.headers.get("content-range"), res.headers.get("content-length"), body()
