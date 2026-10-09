@@ -13,16 +13,20 @@ dispatch to a provider module (providers/drive.py, providers/dropbox_provider.py
     to the source, so everything is rate-limited per IP in one place.
 """
 
+import csv
+import io
 import json
 import mimetypes
 import os
 import re
+import secrets
 from datetime import datetime
 from stat import S_IFREG
 
-from fastapi import FastAPI, Form, HTTPException, Request
+from fastapi import Depends, FastAPI, Form, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, RedirectResponse, Response, StreamingResponse
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -31,6 +35,7 @@ from slowapi.util import get_remote_address
 from stream_zip import ZIP_32, async_stream_zip
 
 import cache
+import downloads
 import providers.drive as drive_provider
 import providers.dropbox_provider as dropbox_provider
 
@@ -46,6 +51,9 @@ FOLDER_CACHE_TTL = int(os.environ.get("FOLDER_CACHE_TTL_SECONDS", "600"))
 # only for requests that actually route through Cloudflare's proxy).
 CDN_BASE_URL = os.environ.get("CDN_BASE_URL", "").rstrip("/")
 MAX_ZIP_FILES = 200
+
+# Password for /admin (HTTP Basic, any username). Unset = admin disabled.
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
 
 limiter = Limiter(key_func=get_remote_address)
 app = FastAPI()
@@ -174,6 +182,26 @@ async def _stream_and_cache(provider, file_ref: str, cache_key: str, content_typ
     cache.put_bytes(cache_key, b"".join(chunks), content_type)
 
 
+def _serve_range(data: bytes, content_type: str, range_header: str | None) -> Response:
+    base_headers = {"Cache-Control": "public, max-age=2592000, immutable", "Accept-Ranges": "bytes"}
+    if not range_header:
+        return Response(content=data, media_type=content_type, headers=base_headers)
+
+    size = len(data)
+    try:
+        start_s, _, end_s = range_header.removeprefix("bytes=").partition("-")
+        start = int(start_s) if start_s else 0
+        end = int(end_s) if end_s else size - 1
+    except ValueError:
+        start, end = 0, size - 1
+    end = min(end, size - 1)
+    chunk = data[start:end + 1]
+    return Response(
+        content=chunk, status_code=206, media_type=content_type,
+        headers={**base_headers, "Content-Range": f"bytes {start}-{end}/{size}", "Content-Length": str(len(chunk))},
+    )
+
+
 @app.get("/api/stream/{provider_name}/{file_ref}")
 @limiter.limit("30/minute")
 async def stream_video(request: Request, provider_name: str, file_ref: str, name: str = ""):
@@ -181,27 +209,52 @@ async def stream_video(request: Request, provider_name: str, file_ref: str, name
     provider.validate_ref(file_ref)
     cache_key = f"{provider_name}/video/{file_ref}"
     guessed_type = mimetypes.guess_type(name)[0] or "video/mp4"
+    range_header = request.headers.get("range")
 
     cached = cache.get_bytes(cache_key)
     if cached:
         if CDN_BASE_URL:
             return _cdn_redirect(cache_key)
         data, content_type = cached
-        return Response(content=data, media_type=content_type,
-                         headers={"Cache-Control": "public, max-age=2592000, immutable"})
+        return _serve_range(data, content_type, range_header)
+
+    if range_header:
+        # Forward the Range straight to the source so playback can start
+        # immediately instead of waiting for (and us proxying) the whole
+        # file — and so Safari, which refuses to play without a ranged
+        # response, works at all. Not cached: a 206 is only part of the
+        # file, and the Range is almost always present from the very first
+        # request, so caching would otherwise rarely trigger for video at
+        # all. The full-file cache still gets populated whenever a client
+        # requests the whole thing (e.g. the download button).
+        status, content_type, content_range, content_length, body = await provider.stream_range(file_ref, range_header)
+        headers = {"Accept-Ranges": "bytes", "Cache-Control": "public, max-age=2592000, immutable"}
+        if content_range:
+            headers["Content-Range"] = content_range
+        if content_length:
+            headers["Content-Length"] = content_length
+        return StreamingResponse(body, status_code=status, media_type=content_type or guessed_type, headers=headers)
 
     return StreamingResponse(
         _stream_and_cache(provider, file_ref, cache_key, guessed_type),
         media_type=guessed_type,
-        headers={"Cache-Control": "public, max-age=2592000, immutable"},
+        headers={"Cache-Control": "public, max-age=2592000, immutable", "Accept-Ranges": "bytes"},
     )
 
 
 @app.get("/api/download/{provider_name}/{file_ref}")
 @limiter.limit("60/minute")
-async def download_file(request: Request, provider_name: str, file_ref: str, name: str = "download"):
+async def download_file(
+    request: Request, provider_name: str, file_ref: str, name: str = "download",
+    email: str = "", optin: int = 0, source: str = "", gallery: str = "",
+):
     provider = _get_provider(provider_name)
     provider.validate_ref(file_ref)
+    clean_email = _require_email(email)
+    downloads.log_download(
+        email=clean_email, optin=bool(optin), provider=provider_name, source=source,
+        gallery_name=gallery, kind="photo", filenames=[name], ip=get_remote_address(request),
+    )
 
     safe_name = name.replace('"', "")
     return StreamingResponse(
@@ -209,6 +262,13 @@ async def download_file(request: Request, provider_name: str, file_ref: str, nam
         media_type="application/octet-stream",
         headers={"Content-Disposition": f'attachment; filename="{safe_name}"'},
     )
+
+
+def _require_email(raw: str) -> str:
+    email = downloads.normalize_email(raw)
+    if email is None:
+        raise HTTPException(400, "A valid email is required to download")
+    return email
 
 
 def _dedupe_names(names: list) -> list:
@@ -244,8 +304,18 @@ async def download_zip(
     files: str = Form(...),
     zip_name: str = Form("gallery"),
     provider: str = Form("drive"),
+    email: str = Form(""),
+    optin: int = Form(0),
+    source: str = Form(""),
+    gallery_name: str = Form(""),
+    kind: str = Form("selected"),
+    part: int = Form(0),
+    total: int = Form(0),
 ):
     provider_mod = _get_provider(provider)
+    clean_email = _require_email(email)
+    if kind not in ("selected", "all"):
+        raise HTTPException(400, "Invalid kind")
     try:
         file_list = json.loads(files)
     except ValueError:
@@ -264,6 +334,15 @@ async def download_zip(
         names.append(item.get("name") or file_ref)
     names = _dedupe_names(names)
 
+    # A very large "Download All" is sent as several zips; log it once (part 0)
+    # with the full file count rather than once per chunk.
+    if part == 0:
+        downloads.log_download(
+            email=clean_email, optin=bool(optin), provider=provider, source=source,
+            gallery_name=gallery_name, kind=kind, filenames=names,
+            file_count=max(total, len(names)), ip=get_remote_address(request),
+        )
+
     async def member_content(file_ref: str):
         async for chunk in provider_mod.stream_download(file_ref):
             yield chunk
@@ -279,6 +358,71 @@ async def download_zip(
         async_stream_zip(members()),
         media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="{zip_filename}"'},
+    )
+
+
+# ---------- admin dashboard ----------
+_basic = HTTPBasic(auto_error=False)
+
+
+def _require_admin(credentials: HTTPBasicCredentials | None = Depends(_basic)):
+    if not ADMIN_PASSWORD:
+        raise HTTPException(404, "Not found")
+    if credentials is None or not secrets.compare_digest(
+        credentials.password.encode(), ADMIN_PASSWORD.encode()
+    ):
+        raise HTTPException(401, "Unauthorized", headers={"WWW-Authenticate": 'Basic realm="LuxSync admin"'})
+
+
+@app.get("/admin", dependencies=[Depends(_require_admin)])
+@limiter.limit("30/minute")
+async def serve_admin(request: Request):
+    return FileResponse("admin.html", headers={"Cache-Control": "no-store"})
+
+
+@app.get("/api/admin/stats", dependencies=[Depends(_require_admin)])
+@limiter.limit("60/minute")
+async def admin_stats(request: Request):
+    return downloads.stats()
+
+
+@app.get("/api/admin/downloads", dependencies=[Depends(_require_admin)])
+@limiter.limit("60/minute")
+async def admin_downloads(request: Request, view: str = "gallery", q: str = "",
+                          limit: int = 100, offset: int = 0):
+    return downloads.list_downloads(view, q.strip(), min(max(limit, 1), 500), max(offset, 0))
+
+
+@app.get("/api/admin/emails", dependencies=[Depends(_require_admin)])
+@limiter.limit("60/minute")
+async def admin_emails(request: Request, q: str = ""):
+    return downloads.list_emails(q.strip())
+
+
+def _csv_cell(value) -> str:
+    # Emails/filenames are visitor-supplied; stop spreadsheets treating them as formulas.
+    text = str(value)
+    return "'" + text if text.startswith(("=", "+", "-", "@", "\t", "\r")) else text
+
+
+@app.get("/api/admin/export.csv", dependencies=[Depends(_require_admin)])
+@limiter.limit("10/minute")
+async def admin_export(request: Request, view: str = "emails"):
+    out = io.StringIO()
+    writer = csv.writer(out)
+    if view == "emails":
+        writer.writerow(["email", "newsletter_optin", "downloads", "galleries", "first_seen", "last_seen"])
+        for r in downloads.list_emails():
+            writer.writerow([_csv_cell(r["email"]), r["optin"], r["downloads"], r["galleries"],
+                             r["first_seen"], r["last_seen"]])
+    else:
+        writer.writerow(["time_utc", "email", "newsletter_optin", "gallery", "type", "files", "filenames"])
+        for r in downloads.list_downloads("photo", limit=1_000_000)["items"] +                  downloads.list_downloads("gallery", limit=1_000_000)["items"]:
+            writer.writerow([r["ts"], _csv_cell(r["email"]), r["optin"], _csv_cell(r["gallery_name"]),
+                             r["kind"], r["file_count"], _csv_cell("; ".join(r["filenames"]))])
+    return Response(
+        out.getvalue(), media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="luxsync-{view}.csv"'},
     )
 
 
