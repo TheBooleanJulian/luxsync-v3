@@ -24,6 +24,9 @@
   h1{font-size:22px;font-weight:600;}
   h1 em{color:var(--teal);font-style:normal;}
   .eyebrow{font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:0.18em;text-transform:uppercase;color:var(--ink-faint);}
+  .brand{display:flex;align-items:center;gap:10px;text-decoration:none;color:inherit;}
+  .brand .mark{width:26px;height:26px;display:block;}
+  .brand:hover h1 em{color:var(--gold);}
 
   .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:32px;}
   .stat{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:16px 18px;}
@@ -77,7 +80,10 @@
 <body>
 <div class="wrap">
   <header>
-    <h1>Lux<em>Sync</em> Admin</h1>
+    <a class="brand" href="https://luxsync-v3.thebooleanjulian.dev/" target="_blank" rel="noopener">
+      <img class="mark" src="/static/logo-mark.png" alt="LuxSync">
+      <h1>Lux<em>Sync</em> Admin</h1>
+    </a>
     <div class="eyebrow">Download activity</div>
   </header>
 
