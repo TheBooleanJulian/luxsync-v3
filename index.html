@@ -384,6 +384,46 @@
   .gate-optin input{accent-color:var(--teal); margin-top:3px;}
   .gate-error{color:#ff6b6b; font-size:12px; font-family:'JetBrains Mono',monospace; margin-top:8px; display:none;}
   .gate-actions{display:flex; justify-content:flex-end; gap:10px; margin-top:20px;}
+
+  /* ---------- now downloading panel ---------- */
+  @keyframes dlSlide{ from{ transform:translateX(-100%); } to{ transform:translateX(250%); } }
+  .dl{
+    position:fixed; inset:0; z-index:210; display:none; align-items:center; justify-content:center;
+    background:rgba(3,3,5,0.82); backdrop-filter:blur(6px); padding:20px;
+  }
+  .dl.open{display:flex;}
+  .dl-card{
+    width:100%; max-width:520px; max-height:calc(100vh - 40px); display:flex; flex-direction:column;
+    background:var(--panel); border:1px solid var(--line-strong); border-radius:var(--radius); padding:26px;
+  }
+  .dl-card h2{
+    font-family:'JetBrains Mono',monospace; font-size:12px; letter-spacing:0.18em;
+    text-transform:uppercase; color:var(--teal); margin-bottom:6px;
+  }
+  .dl-summary{font-size:13.5px; color:var(--ink-dim); margin-bottom:14px;}
+  .dl-summary b{color:var(--gold); font-weight:600;}
+  .dl-track{height:4px; background:var(--void); border-radius:2px; overflow:hidden; position:relative;}
+  .dl-track i{display:block; height:100%; width:0; background:var(--teal); transition:width 0.25s ease;}
+  .dl-track.indeterminate i{width:40%; animation:dlSlide 1.3s ease-in-out infinite;}
+  .dl-list{
+    list-style:none; margin:18px 0 0; overflow-y:auto; min-height:0;
+    border-top:1px solid var(--line);
+  }
+  .dl-row{padding:10px 2px; border-bottom:1px solid var(--line);}
+  .dl-row-top{display:flex; justify-content:space-between; gap:12px; align-items:baseline; margin-bottom:7px;}
+  .dl-name{font-size:13px; color:var(--ink); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0;}
+  .dl-note{font-size:11px; color:var(--ink-faint); white-space:nowrap; flex-shrink:0;}
+  .dl-row[data-status="active"] .dl-note{color:var(--teal);}
+  .dl-row[data-status="done"] .dl-note, .dl-row[data-status="sent"] .dl-note{color:var(--gold);}
+  .dl-row[data-status="error"] .dl-note{color:#ff6b6b;}
+  .dl-row[data-status="pending"] .dl-track{opacity:0.5;}
+  .dl-row[data-status="done"] .dl-track i, .dl-row[data-status="sent"] .dl-track i{width:100%;}
+  .dl-row[data-status="error"] .dl-track i{width:100%; background:#ff6b6b;}
+  .dl-retry{
+    background:none; border:none; color:var(--teal); font:inherit; cursor:pointer;
+    text-decoration:underline; margin-left:8px; padding:0;
+  }
+  .dl-actions{display:flex; justify-content:flex-end; margin-top:18px;}
 </style>
 </head>
 <body>
@@ -498,6 +538,17 @@
       <button type="submit" class="btn primary">Continue</button>
     </div>
   </form>
+</div>
+
+<!-- Now downloading: progress for single and zip downloads -->
+<div class="dl" id="dl" role="dialog" aria-live="polite" aria-labelledby="dlTitle">
+  <div class="dl-card">
+    <h2 id="dlTitle">Now downloading</h2>
+    <div class="dl-summary mono" id="dlSummary"></div>
+    <div class="dl-track" id="dlOverall"><i></i></div>
+    <ul class="dl-list" id="dlList"></ul>
+    <div class="dl-actions"><button type="button" class="btn" id="dlClose">Hide</button></div>
+  </div>
 </div>
 
 <script>
@@ -806,20 +857,202 @@
     requireEmail((v)=> startSingleDownload(p, v));
   }
 
-  function startSingleDownload(p, v){
+  // ---------- "Now downloading" panel ----------
+  // Rows are created once and updated in place. A row's status is one of
+  // pending | active | done | sent | error ("sent" = handed to the browser's
+  // own download manager, so there's nothing more to track).
+  const dlEls = {
+    root: document.getElementById('dl'), summary: document.getElementById('dlSummary'),
+    overall: document.getElementById('dlOverall'), list: document.getElementById('dlList'),
+    close: document.getElementById('dlClose'),
+  };
+  let dlRows = [];   // { li, track, note, status, text, frac }
+  let dlJobs = [];   // zip jobs polled from /api/download-progress: { id, rows, born, done }
+  let dlTimer = null;
+  const dlSettled = (r)=> r.status === 'done' || r.status === 'sent' || r.status === 'error';
+
+  function fmtBytes(n){
+    if(n < 1024 * 1024) return `${Math.max(1, Math.round(n / 1024))} KB`;
+    return `${(n / 1024 / 1024).toFixed(1)} MB`;
+  }
+
+  function dlAddRows(names){
+    // A new download after the previous batch finished starts a fresh list.
+    if(dlRows.length && dlRows.every(dlSettled) && !dlJobs.some(j=> !j.done)){
+      dlRows = []; dlJobs = []; dlEls.list.textContent = '';
+    }
+    const rows = names.map((name)=>{
+      const li = document.createElement('li');
+      li.className = 'dl-row';
+      li.dataset.status = 'pending';
+      li.innerHTML = '<div class="dl-row-top"><span class="dl-name"></span><span class="dl-note mono">Waiting</span></div><div class="dl-track"><i></i></div>';
+      li.querySelector('.dl-name').textContent = name;
+      li.querySelector('.dl-name').title = name;
+      dlEls.list.appendChild(li);
+      const row = { li, note: li.querySelector('.dl-note'), track: li.querySelector('.dl-track'),
+                    bar: li.querySelector('.dl-track i'), status: 'pending', text: 'Waiting', frac: null };
+      dlRows.push(row);
+      return row;
+    });
+    dlEls.root.classList.add('open');
+    dlRefresh();
+    return rows;
+  }
+
+  // frac: 0..1 for a known fraction, null for "in progress, size unknown".
+  function dlSet(row, status, text, frac){
+    if(row.status === status && row.text === text && row.frac === frac) return;
+    row.status = status; row.text = text; row.frac = frac === undefined ? null : frac;
+    row.li.dataset.status = status;
+    row.note.textContent = text;
+    const known = status === 'active' && row.frac !== null;
+    row.track.classList.toggle('indeterminate', status === 'active' && row.frac === null);
+    row.bar.style.width = known ? `${Math.round(row.frac * 100)}%` : '';
+    dlRefresh();
+  }
+
+  function dlRefresh(){
+    const total = dlRows.length;
+    const failed = dlRows.filter(r=> r.status === 'error').length;
+    const finished = dlRows.filter(dlSettled).length;
+    const partial = dlRows.reduce((s, r)=> s + (r.status === 'active' && r.frac !== null ? r.frac : 0), 0);
+    const allDone = total > 0 && finished === total && !dlJobs.some(j=> !j.done);
+    dlEls.overall.firstElementChild.style.width = total ? `${Math.round((finished + partial) / total * 100)}%` : '0';
+    if(allDone){
+      dlEls.summary.innerHTML = failed
+        ? `<b>${total - failed}</b> of ${total} files finished, ${failed} failed`
+        : `<b>All ${total}</b> file${total === 1 ? '' : 's'} sent — check your browser's downloads`;
+    } else {
+      dlEls.summary.innerHTML = `<b>${finished}</b> of ${total} file${total === 1 ? '' : 's'}`;
+    }
+    dlEls.close.textContent = allDone ? 'Close' : 'Hide';
+  }
+  dlEls.close.addEventListener('click', ()=> dlEls.root.classList.remove('open'));
+
+  function saveBlob(blob, name){
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(()=> URL.revokeObjectURL(url), 60000);
+  }
+
+  function startSingleDownload(p, v, row){
     const params = new URLSearchParams({
       email: v.email, optin: v.optin ? '1' : '0',
       source: currentSourceId || '', gallery: currentGalleryName,
     });
-    const a = document.createElement('a');
-    a.href = `${p.downloadUrl}&${params}`;
-    a.download = p.name;
-    a.target = '_blank';
-    a.rel = 'noopener';
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    showReviewToast();
+    const url = `${p.downloadUrl}&${params}`;
+    row = row || dlAddRows([p.name])[0];
+
+    // Videos can be huge and the server can't tell us their size up front, so
+    // buffering one in the page would be risky: hand it to the browser's own
+    // download manager (as before) and just note that it started.
+    if(p.isVideo){
+      const a = document.createElement('a');
+      a.href = url; a.download = p.name; a.target = '_blank'; a.rel = 'noopener';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      dlSet(row, 'sent', 'Started in your browser');
+      showReviewToast();
+      return;
+    }
+
+    fetchPhoto(url, p.name, row).then((ok)=>{
+      if(ok){ showReviewToast(); return; }
+      const retry = document.createElement('button');
+      retry.type = 'button'; retry.className = 'dl-retry'; retry.textContent = 'Retry';
+      retry.addEventListener('click', ()=>{ retry.remove(); startSingleDownload(p, v, row); });
+      row.note.appendChild(retry);
+    });
+  }
+
+  async function fetchPhoto(url, name, row){
+    dlSet(row, 'active', 'Connecting…', null);
+    try{
+      const res = await fetch(url);
+      if(!res.ok){
+        let detail = '';
+        try { detail = (await res.json()).detail; } catch(e){}
+        throw new Error(typeof detail === 'string' && detail ? detail : `Server error ${res.status}`);
+      }
+      const total = Number(res.headers.get('Content-Length')) || 0;
+      let blob;
+      if(res.body && res.body.getReader){
+        const reader = res.body.getReader();
+        const parts = [];
+        let loaded = 0;
+        for(;;){
+          const { done, value } = await reader.read();
+          if(done) break;
+          parts.push(value);
+          loaded += value.length;
+          dlSet(row, 'active', total ? `${fmtBytes(loaded)} / ${fmtBytes(total)}` : fmtBytes(loaded), total ? loaded / total : null);
+        }
+        if(total && loaded !== total) throw new Error('Download was cut off');
+        blob = new Blob(parts);
+      } else {
+        blob = await res.blob();
+      }
+      saveBlob(blob, name);
+      dlSet(row, 'done', fmtBytes(blob.size), 1);
+      return true;
+    } catch(err){
+      dlSet(row, 'error', err instanceof TypeError ? 'Network error' : (err.message || 'Failed'));
+      return false;
+    }
+  }
+
+  function dlStartPolling(){
+    if(!dlTimer) dlTimer = setInterval(dlPoll, 800);
+  }
+
+  async function dlPoll(){
+    const live = dlJobs.filter(j=> !j.done);
+    if(!live.length){ clearInterval(dlTimer); dlTimer = null; return; }
+    let data;
+    try {
+      const res = await fetch('/api/download-progress?jobs=' + live.map(j=> j.id).join(','));
+      if(!res.ok) return;
+      data = await res.json();
+    } catch(e){ return; }
+
+    for(const job of live){
+      const s = data[job.id];
+      if(!s){
+        // The job is registered once the server accepts the request; if it
+        // never shows up the request was rejected or the server restarted.
+        if(Date.now() - job.born > 15000){
+          job.done = true;
+          job.rows.filter(r=> !dlSettled(r)).forEach(r=> dlSet(r, 'error', 'Could not start'));
+        }
+        continue;
+      }
+      job.rows.forEach((row, i)=>{
+        const c = s.files[i];
+        if(c === 'd') dlSet(row, 'done', 'In your zip', 1);
+        else if(c === 'a') dlSet(row, 'active', s.bytes ? fmtBytes(s.bytes) : 'Fetching…', null);
+        else if(c === 'f') dlSet(row, 'error', 'Failed');
+      });
+      if(s.state === 'done'){
+        job.done = true;
+        job.rows.filter(r=> !dlSettled(r)).forEach(r=> dlSet(r, 'done', 'In your zip', 1));
+      } else if(s.state === 'error'){
+        job.done = true;
+        job.rows.filter(r=> !dlSettled(r)).forEach(r=> dlSet(r, 'error', s.error || 'Interrupted'));
+      }
+    }
+    dlRefresh();
+  }
+
+  function newJobId(){
+    const bytes = new Uint8Array(12);
+    if(window.crypto && crypto.getRandomValues) crypto.getRandomValues(bytes);
+    else for(let i=0;i<bytes.length;i++) bytes[i] = Math.floor(Math.random() * 256);
+    return Array.from(bytes, b=> b.toString(16).padStart(2, '0')).join('');
   }
 
   // ---------- selection + zip download ----------
@@ -852,6 +1085,9 @@
   }
 
   function downloadAsZip(list, v, kind, part, total){
+    const jobId = newJobId();
+    dlJobs.push({ id: jobId, rows: dlAddRows(list.map(p=> p.name)), born: Date.now(), done: false });
+    dlStartPolling();
     const form = document.createElement('form');
     form.method = 'POST';
     form.action = '/api/download-zip';
@@ -874,7 +1110,7 @@
     form.appendChild(providerInput);
     const extra = {
       email: v.email, optin: v.optin ? '1' : '0', source: currentSourceId || '',
-      gallery_name: currentGalleryName, kind, part, total,
+      gallery_name: currentGalleryName, kind, part, total, job_id: jobId,
     };
     for(const [name, value] of Object.entries(extra)){
       const f = document.createElement('input');

@@ -21,6 +21,10 @@ async def _fake_stream(file_ref):
     yield b"data"
 
 
+async def _no_sleep(_seconds):
+    pass
+
+
 class DownloadTracking(unittest.TestCase):
     def setUp(self):
         main.limiter.enabled = False
@@ -62,6 +66,64 @@ class DownloadTracking(unittest.TestCase):
         emails = downloads.list_emails()
         self.assertEqual(len(emails), 1)
         self.assertEqual((emails[0]["email"], emails[0]["optin"], emails[0]["downloads"]), ("kai@x.com", 1, 2))
+
+    def test_upstream_failure_is_an_error_not_an_empty_file(self):
+        async def failing(file_ref):
+            raise main.HTTPException(503, "busy")
+            yield  # pragma: no cover
+        main.drive_provider.stream_download = failing
+        r = self.client.get("/api/download/drive/abc1234567?name=a.jpg&email=kai@x.com")
+        self.assertEqual(r.status_code, 503)
+        self.assertNotIn("attachment", r.headers.get("content-disposition", ""))
+
+    def test_truncated_transfer_is_retried_and_sent_whole(self):
+        calls = []
+
+        async def flaky(file_ref):
+            calls.append(1)
+            yield b"half"
+            if len(calls) < 3:
+                raise main.httpx.ReadError("cut off")
+            yield b"-rest"
+        main.drive_provider.stream_download = flaky
+        main.asyncio.sleep = _no_sleep
+        r = self.client.get("/api/download/drive/abc1234567?name=a.jpg&email=kai@x.com")
+        self.assertEqual((r.status_code, r.content), (200, b"half-rest"))
+        self.assertEqual(r.headers["content-length"], "9")
+
+    def test_always_truncated_is_an_error_not_a_corrupt_file(self):
+        async def broken(file_ref):
+            yield b"half"
+            raise main.httpx.ReadError("cut off")
+        main.drive_provider.stream_download = broken
+        main.asyncio.sleep = _no_sleep
+        r = self.client.get("/api/download/drive/abc1234567?name=a.jpg&email=kai@x.com")
+        self.assertEqual(r.status_code, 503)
+
+    def test_zip_progress_is_reported_per_file(self):
+        files = '[{"id":"abc1234567","name":"a.jpg"},{"id":"def4567890","name":"b.jpg"}]'
+        r = self.client.post("/api/download-zip", data={
+            "files": files, "email": "kai@x.com", "job_id": "job1234567890abcd"})
+        self.assertEqual(r.status_code, 200)
+        r = self.client.get("/api/download-progress?jobs=job1234567890abcd,unknownjob123456")
+        self.assertEqual(r.json(), {"job1234567890abcd": {"state": "done", "files": "dd", "bytes": 4, "error": ""}})
+
+    def test_zip_progress_marks_failed_file(self):
+        async def broken(file_ref):
+            raise main.HTTPException(404, "gone")
+            yield  # pragma: no cover
+        main.drive_provider.stream_download = broken
+        files = '[{"id":"abc1234567","name":"a.jpg"}]'
+        try:
+            self.client.post("/api/download-zip", data={
+                "files": files, "email": "kai@x.com", "job_id": "jobfail1234567890"})
+        except Exception:
+            pass  # the aborted stream surfaces in the test client; the job state is what matters
+        job = self.client.get("/api/download-progress?jobs=jobfail1234567890").json()["jobfail1234567890"]
+        self.assertEqual((job["state"], job["files"]), ("error", "f"))
+
+    def test_zip_name_not_doubled(self):
+        self.assertEqual(main._sanitize_zip_name("Hatsunemelvin V6 Miku MBS.zip"), "Hatsunemelvin V6 Miku MBS")
 
     def test_admin_requires_password(self):
         self.assertEqual(self.client.get("/api/admin/stats").status_code, 401)

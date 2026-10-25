@@ -13,6 +13,7 @@ dispatch to a provider module (providers/drive.py, providers/dropbox_provider.py
     to the source, so everything is rate-limited per IP in one place.
 """
 
+import asyncio
 import csv
 import io
 import json
@@ -20,12 +21,14 @@ import mimetypes
 import os
 import re
 import secrets
+import time
 from datetime import datetime
 from stat import S_IFREG
 
+import httpx
 from fastapi import Depends, FastAPI, Form, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, RedirectResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -245,6 +248,76 @@ async def stream_video(request: Request, provider_name: str, file_ref: str, name
     )
 
 
+async def _prime_stream(stream):
+    """Pull the first chunk before the response starts. An error raised inside
+    a StreamingResponse generator happens after the 200 + attachment headers
+    are sent, so the visitor gets a 0-byte "successful" download; priming makes
+    upstream failures surface as a real HTTP error instead."""
+    it = stream.__aiter__()
+    try:
+        first = await it.__anext__()
+    except StopAsyncIteration:
+        raise HTTPException(502, "The source returned an empty file")
+
+    async def rest():
+        yield first
+        async for chunk in it:
+            yield chunk
+    return rest()
+
+
+def _is_video(name: str) -> bool:
+    return (mimetypes.guess_type(name)[0] or "").startswith("video/")
+
+
+# Progress of in-flight zip downloads, polled by the "Now downloading" panel.
+# In-memory only (single uvicorn worker, see Procfile): a restart just means an
+# open panel loses track of its zip, never that the download itself breaks.
+# Job ids are random, client-generated and only reveal per-file status letters:
+# p(ending) a(ctive) d(one) f(ailed).
+JOB_ID_RE = re.compile(r"^[A-Za-z0-9_-]{8,40}$")
+JOB_TTL_SECONDS = 3600
+MAX_JOBS = 500
+JOBS: dict = {}
+
+
+def _new_job(job_id: str, file_count: int) -> dict:
+    job = {"t": time.time(), "state": "running", "st": ["p"] * file_count, "bytes": 0, "error": ""}
+    if JOB_ID_RE.match(job_id or ""):
+        now = job["t"]
+        for old_id in [k for k, v in JOBS.items() if now - v["t"] > JOB_TTL_SECONDS]:
+            del JOBS[old_id]
+        while len(JOBS) >= MAX_JOBS:
+            del JOBS[min(JOBS, key=lambda k: JOBS[k]["t"])]
+        JOBS[job_id] = job
+    return job
+
+
+async def _fetch_bytes(provider, file_ref: str, attempts: int = 3, progress=None) -> bytes:
+    """Download a whole (non-video) file into memory, retrying if the source
+    cuts the transfer off partway. Streaming a photo straight through means a
+    mid-transfer failure ends the response early and some browsers save the
+    truncated bytes as a "corrupted" photo; fetching it whole lets us retry
+    and send a correct Content-Length, so a short transfer fails loudly."""
+    for attempt in range(attempts):
+        buf = bytearray()
+        if progress:
+            progress(0)
+        try:
+            async for chunk in provider.stream_download(file_ref):
+                buf += chunk
+                if progress:
+                    progress(len(buf))
+            return bytes(buf)
+        except HTTPException as exc:
+            if exc.status_code == 404 or attempt == attempts - 1:
+                raise
+        except httpx.HTTPError:
+            if attempt == attempts - 1:
+                raise HTTPException(503, "The source cut the download off, please try again")
+        await asyncio.sleep(0.5 * 2 ** attempt)
+
+
 @app.get("/api/download/{provider_name}/{file_ref}")
 @limiter.limit("60/minute")
 async def download_file(
@@ -260,11 +333,16 @@ async def download_file(
     )
 
     safe_name = name.replace('"', "")
-    return StreamingResponse(
-        provider.stream_download(file_ref),
-        media_type="application/octet-stream",
-        headers={"Content-Disposition": f'attachment; filename="{safe_name}"'},
-    )
+    disposition = {"Content-Disposition": f'attachment; filename="{safe_name}"'}
+    if _is_video(name):
+        return StreamingResponse(
+            await _prime_stream(provider.stream_download(file_ref)),
+            media_type="application/octet-stream", headers=disposition,
+        )
+    data = await _fetch_bytes(provider, file_ref)
+    if not data:
+        raise HTTPException(502, "The source returned an empty file")
+    return Response(content=data, media_type="application/octet-stream", headers=disposition)
 
 
 def _require_email(raw: str) -> str:
@@ -296,8 +374,21 @@ def _dedupe_names(names: list) -> list:
 def _sanitize_zip_name(name: str) -> str:
     name = (name or "").strip()
     name = re.sub(r'[\r\n"\\/:*?<>|]', "", name)
+    name = re.sub(r"(\.zip)+$", "", name.strip(), flags=re.I)  # we append .zip ourselves
     name = name.strip(". ")
     return name or "gallery"
+
+
+@app.get("/api/download-progress")
+@limiter.limit("180/minute")
+async def download_progress(request: Request, jobs: str = ""):
+    out = {}
+    for job_id in jobs.split(",")[:20]:
+        job = JOBS.get(job_id)
+        if job:
+            out[job_id] = {"state": job["state"], "files": "".join(job["st"]),
+                           "bytes": job["bytes"], "error": job["error"]}
+    return JSONResponse(out, headers={"Cache-Control": "no-store"})
 
 
 @app.post("/api/download-zip")
@@ -314,6 +405,7 @@ async def download_zip(
     kind: str = Form("selected"),
     part: int = Form(0),
     total: int = Form(0),
+    job_id: str = Form(""),
 ):
     provider_mod = _get_provider(provider)
     clean_email = _require_email(email)
@@ -346,19 +438,43 @@ async def download_zip(
             file_count=max(total, len(names)), ip=get_remote_address(request),
         )
 
-    async def member_content(file_ref: str):
-        async for chunk in provider_mod.stream_download(file_ref):
-            yield chunk
+    job = _new_job(job_id, len(refs))
+
+    def set_bytes(n: int):
+        job["bytes"] = n
+
+    async def member_content(i: int, file_ref: str, name: str):
+        job["st"][i], job["bytes"] = "a", 0
+        try:
+            if _is_video(name):
+                async for chunk in provider_mod.stream_download(file_ref):
+                    job["bytes"] += len(chunk)
+                    yield chunk
+            else:
+                yield await _fetch_bytes(provider_mod, file_ref, progress=set_bytes)
+        except BaseException:
+            job["st"][i] = "f"
+            raise
+        job["st"][i] = "d"
 
     async def members():
         now = datetime.now()
-        for file_ref, name in zip(refs, names):
-            yield (name, now, S_IFREG | 0o644, ZIP_32, member_content(file_ref))
+        for i, (file_ref, name) in enumerate(zip(refs, names)):
+            yield (name, now, S_IFREG | 0o644, ZIP_32, member_content(i, file_ref, name))
+
+    async def tracked_zip():
+        try:
+            async for chunk in async_stream_zip(members()):
+                yield chunk
+            job["state"] = "done"
+        except BaseException:
+            job["state"], job["error"] = "error", "The zip was interrupted"
+            raise
 
     zip_filename = f"{_sanitize_zip_name(zip_name)}.zip"
 
     return StreamingResponse(
-        async_stream_zip(members()),
+        tracked_zip(),
         media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="{zip_filename}"'},
     )
