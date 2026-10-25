@@ -6,7 +6,7 @@
 
 **A premium, dependency-free photo gallery that turns any public Google Drive or Dropbox folder into a scrollable, previewable, downloadable client gallery.**
 
-![Version](https://img.shields.io/badge/version-0.9.0-00D4C8)
+![Version](https://img.shields.io/badge/version-0.10.0-00D4C8)
 ![Python](https://img.shields.io/badge/-Python-3776AB?logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/-FastAPI-009688?logo=fastapi&logoColor=white)
 ![Zeabur](https://img.shields.io/badge/-Zeabur-6C5CE7)
@@ -206,6 +206,7 @@ Ops & delivery
 
 Summarised from commit history, most recent first. Versions follow `0.MINOR.PATCH` — MINOR for new features/architecture changes, PATCH for fixes.
 
+- **v0.10.0 — 2026-10-25 (download reliability + progress panel)** — Fixed downloads that arrived as 0-byte, corrupt or "invalid" zip files: errors raised mid-stream used to surface only after a 200 + attachment header had already been sent, so Drive rate limits (403/429/5xx) or a cut-off transfer produced a broken file. Drive downloads now retry transient errors, photos are fetched whole (with retries) and sent with a correct `Content-Length` so a short transfer fails loudly instead of saving a corrupt file, and upstream failures return a real HTTP error. Zip names no longer end in `.zip.zip`. New "Now downloading" panel shows every single/selected/all download with an overall progress bar and a per-file list; single photos show real byte progress, zips report per-file status via the new `GET /api/download-progress` (in-memory job registry; `download-zip` takes an optional `job_id`). Videos still stream and are handed to the browser's download manager.
 - **v0.9.0 — 2026-10-05 (inline video playback)** — Added `GET /api/stream/{provider}/{file_ref}`, which tees a video's bytes to the client while buffering them in memory, then caches the full file in S3-compatible storage the same way thumbnails/full images already are (served via the CDN redirect when `CDN_BASE_URL` is set). Clicking a video now opens the lightbox and plays it inline via a `<video>` element instead of downloading directly; the grid badge is a play icon again. No range-request support yet, so playback can't seek ahead of the buffered range.
 - **v0.8.0 — 2026-10-05 (video delivery)** — Galleries can now include video files, not just photos. Both providers list files with a video mimetype/extension alongside images, and reuse their existing thumbnail APIs to generate a frame thumbnail for video files too (no ffmpeg needed) — the grid overlays a play icon on top, falling back to a generic badge if thumbnail generation 404s for an unsupported codec/container. Clicking a video downloads it directly rather than opening it in the lightbox. Download-all and multi-select zip already worked for arbitrary file types, so no changes were needed there.
 - **v0.7.1 — 2026-09-20 (recursive galleries)** — Fixed galleries organized as an event folder full of per-person/per-shoot subfolders returning "no viewable images" because listing only checked the top level. Drive now BFS-walks the folder tree (capped at 300 folders); Dropbox's `list_folder` now passes `recursive: True` instead of `False`.
