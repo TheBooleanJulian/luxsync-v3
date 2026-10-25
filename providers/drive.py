@@ -3,6 +3,7 @@ server-side API key. See providers/__init__.py for the interface every
 provider module implements.
 """
 
+import asyncio
 import os
 import re
 
@@ -128,11 +129,26 @@ async def stream_download(file_ref: str):
         raise HTTPException(500, "Server is missing DRIVE_API_KEY")
     url = f"https://www.googleapis.com/drive/v3/files/{file_ref}"
     async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
-        async with client.stream("GET", url, params={"alt": "media", "key": DRIVE_API_KEY}) as res:
-            if res.status_code != 200:
-                raise HTTPException(404, f"File {file_ref} not found or not public")
+        # Drive rate-limits (403/429) and hiccups (5xx) under concurrent
+        # downloads; retry those before any byte is sent, since after that
+        # the failure can only surface as a truncated/empty file.
+        for attempt in range(3):
+            req = client.build_request("GET", url, params={"alt": "media", "key": DRIVE_API_KEY})
+            res = await client.send(req, stream=True)
+            if res.status_code == 200:
+                break
+            status = res.status_code
+            await res.aclose()
+            if status == 404 or attempt == 2:
+                raise HTTPException(404 if status == 404 else 503,
+                                    f"File {file_ref} not found or not public" if status == 404
+                                    else "Google Drive is busy, please try again in a moment")
+            await asyncio.sleep(0.5 * 2 ** attempt)
+        try:
             async for chunk in res.aiter_bytes():
                 yield chunk
+        finally:
+            await res.aclose()
 
 
 async def stream_range(file_ref: str, range_header: str | None):
