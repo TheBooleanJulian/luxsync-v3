@@ -13,6 +13,8 @@ import time
 import httpx
 from fastapi import HTTPException
 
+from errors import LuxError
+
 DRIVE_API_KEY = os.environ.get("DRIVE_API_KEY", "")
 DRIVE_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{10,}$")
 
@@ -170,8 +172,8 @@ async def _fetch_public_image(file_ref: str, size_param: str) -> tuple[bytes, st
                     break
                 await _backoff(attempt, res)
     if res.status_code == 429 or res.status_code >= 500:
-        raise HTTPException(503, "Google Drive is busy, please try again in a moment")
-    raise HTTPException(404, "Image not found or folder is no longer public")
+        raise LuxError(503, "LS-DRV-RATE", f"thumbnail {file_ref} status={res.status_code}")
+    raise LuxError(404, "LS-DRV-GONE", f"thumbnail {file_ref} status={res.status_code}")
 
 
 async def get_thumb(file_ref: str) -> tuple[bytes, str]:
@@ -190,7 +192,7 @@ async def stream_download(file_ref: str):
     # client mislabeled as video/mp4, hanging the <video> element forever.
     # The API v3 alt=media download has no such interstitial.
     if not DRIVE_API_KEY:
-        raise HTTPException(500, "Server is missing DRIVE_API_KEY")
+        raise LuxError(500, "LS-DRV-CFG", "DRIVE_API_KEY is not set")
     url = f"https://www.googleapis.com/drive/v3/files/{file_ref}"
     async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
         # This is the only retry layer for opening a download (callers retry
@@ -210,13 +212,13 @@ async def stream_download(file_ref: str):
             if reason == "downloadQuotaExceeded":
                 # Google's per-file download cap; retrying only digs deeper.
                 await res.aclose()
-                raise HTTPException(503, "Google has temporarily limited downloads of this file, please try again later")
+                raise LuxError(503, "LS-DRV-FILE", f"file={file_ref}")
             if not _is_transient(status, reason):
                 await res.aclose()
-                raise HTTPException(404, f"File {file_ref} not found or not public")
+                raise LuxError(404, "LS-DRV-GONE", f"file={file_ref} status={status} reason={reason or '-'}")
             if attempt == MAX_ATTEMPTS - 1:
                 await res.aclose()
-                raise HTTPException(503, "Google Drive is busy, please try again in a moment")
+                raise LuxError(503, "LS-DRV-RATE", f"file={file_ref} status={status} reason={reason or '-'}")
             await _backoff(attempt, res)
             await res.aclose()
         try:
