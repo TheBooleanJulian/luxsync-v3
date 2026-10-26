@@ -80,7 +80,8 @@ class DriveQuota(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(main.HTTPException) as cm:
                 await _download()
         self.assertEqual((cm.exception.status_code, len(fake.requests)), (503, 1))
-        self.assertIn("limited downloads of this file", cm.exception.detail)
+        self.assertEqual(cm.exception.detail["code"], "LS-DRV-FILE")
+        self.assertRegex(cm.exception.detail["ref"], r"^[0-9A-F]{6}$")
 
     async def test_missing_or_private_file_is_not_retried(self):
         for response in (_error(404, "notFound"), _error(403, "forbidden")):
@@ -88,6 +89,7 @@ class DriveQuota(unittest.IsolatedAsyncioTestCase):
                 with self.assertRaises(main.HTTPException) as cm:
                     await _download()
             self.assertEqual((cm.exception.status_code, len(fake.requests)), (404, 1))
+            self.assertEqual(cm.exception.detail["code"], "LS-DRV-GONE")
 
     async def test_retries_do_not_stack_across_layers(self):
         # Regression: stream_download retried 3x and _fetch_bytes retried that
@@ -96,6 +98,16 @@ class DriveQuota(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(main.HTTPException) as cm:
                 await main._fetch_bytes(drive, "abc1234567")
         self.assertEqual((cm.exception.status_code, len(fake.requests)), (503, 3))
+        self.assertEqual(cm.exception.detail["code"], "LS-DRV-RATE")
+
+    async def test_error_ref_is_logged_for_support(self):
+        with FakeDrive([_error(403, "userRateLimitExceeded")]):
+            with self.assertLogs("luxsync.errors", "WARNING") as logs:
+                with self.assertRaises(main.HTTPException) as cm:
+                    await _download()
+        line = " ".join(logs.output)
+        self.assertIn(cm.exception.detail["ref"], line)
+        self.assertIn("reason=userRateLimitExceeded", line)
 
     async def test_mid_transfer_cut_is_still_retried(self):
         class Cut(httpx.AsyncByteStream):
