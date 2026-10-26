@@ -309,9 +309,6 @@ async def _fetch_bytes(provider, file_ref: str, attempts: int = 3, progress=None
                 if progress:
                     progress(len(buf))
             return bytes(buf)
-        except HTTPException as exc:
-            if exc.status_code == 404 or attempt == attempts - 1:
-                raise
         except httpx.HTTPError:
             if attempt == attempts - 1:
                 raise HTTPException(503, "The source cut the download off, please try again")

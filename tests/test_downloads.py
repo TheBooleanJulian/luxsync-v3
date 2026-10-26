@@ -4,6 +4,7 @@ import sys
 import tempfile
 from contextlib import closing
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 _tmp = tempfile.mkdtemp()
@@ -28,7 +29,13 @@ async def _no_sleep(_seconds):
 class DownloadTracking(unittest.TestCase):
     def setUp(self):
         main.limiter.enabled = False
-        main.drive_provider.stream_download = _fake_stream
+        # Self-cleaning, so later tests (and other test files) see the real
+        # functions; tests below re-assign stream_download freely.
+        for target, name, value in ((main.drive_provider, "stream_download", _fake_stream),
+                                    (main.asyncio, "sleep", _no_sleep)):
+            patcher = mock.patch.object(target, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
         self.client = TestClient(main.app)
         self.auth = ("admin", "secret")
         with closing(downloads._connect()) as conn, conn:
@@ -86,7 +93,6 @@ class DownloadTracking(unittest.TestCase):
                 raise main.httpx.ReadError("cut off")
             yield b"-rest"
         main.drive_provider.stream_download = flaky
-        main.asyncio.sleep = _no_sleep
         r = self.client.get("/api/download/drive/abc1234567?name=a.jpg&email=kai@x.com")
         self.assertEqual((r.status_code, r.content), (200, b"half-rest"))
         self.assertEqual(r.headers["content-length"], "9")
@@ -96,7 +102,6 @@ class DownloadTracking(unittest.TestCase):
             yield b"half"
             raise main.httpx.ReadError("cut off")
         main.drive_provider.stream_download = broken
-        main.asyncio.sleep = _no_sleep
         r = self.client.get("/api/download/drive/abc1234567?name=a.jpg&email=kai@x.com")
         self.assertEqual(r.status_code, 503)
 
