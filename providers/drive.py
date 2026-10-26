@@ -4,8 +4,11 @@ provider module implements.
 """
 
 import asyncio
+import logging
 import os
+import random
 import re
+import time
 
 import httpx
 from fastapi import HTTPException
@@ -101,13 +104,74 @@ async def list_gallery(source_id: str) -> dict:
     return {"name": folder.get("name") or "Gallery", "files": all_files}
 
 
+# ---- quota protection ----
+# Every visitor and every gallery shares one API key and one server IP, so to
+# Drive it all looks like a single heavy user. Drive throttles request *bursts*
+# (403 userRateLimitExceeded / 429) long before the documented per-minute
+# quota (325k units/user, 200 per download) is anywhere near, and a 300-photo
+# zip is ~300 requests in seconds. So: pace request starts globally, retry
+# only errors that are actually transient (honouring Retry-After, with
+# jitter), and log Google's real error reason so throttling is diagnosable.
+log = logging.getLogger("luxsync.drive")
+
+# Minimum gap between Drive API download request starts, across all visitors.
+MIN_REQUEST_INTERVAL = int(os.environ.get("DRIVE_MIN_INTERVAL_MS", "120")) / 1000
+MAX_ATTEMPTS = 3
+_RATE_LIMIT_REASONS = {"userRateLimitExceeded", "rateLimitExceeded", "sharingRateLimitExceeded"}
+_pace_lock = asyncio.Lock()
+_last_request = 0.0
+# Thumbnails come from a different endpoint (not API quota) but 300 at once on
+# a first gallery view gets throttled too; they're short, so a plain cap works.
+_thumb_slots = asyncio.Semaphore(10)
+
+
+async def _pace() -> None:
+    global _last_request
+    async with _pace_lock:
+        wait = _last_request + MIN_REQUEST_INTERVAL - time.monotonic()
+        if wait > 0:
+            await asyncio.sleep(wait)
+        _last_request = time.monotonic()
+
+
+async def _error_reason(res: httpx.Response) -> str:
+    """Google's machine-readable reason (e.g. userRateLimitExceeded,
+    downloadQuotaExceeded) from an error response, or ''."""
+    try:
+        await res.aread()
+        errors = res.json().get("error", {}).get("errors") or []
+        return errors[0].get("reason", "") if errors else ""
+    except Exception:
+        return ""
+
+
+def _is_transient(status: int, reason: str) -> bool:
+    return status in (429, 500, 502, 503, 504) or reason in _RATE_LIMIT_REASONS
+
+
+async def _backoff(attempt: int, res: httpx.Response) -> None:
+    try:
+        delay = min(float(res.headers.get("retry-after", "")), 10)
+    except ValueError:
+        delay = 1.0 * 2 ** attempt
+    await asyncio.sleep(delay + random.random() * 0.5)
+
+
 async def _fetch_public_image(file_ref: str, size_param: str) -> tuple[bytes, str]:
     url = f"https://drive.google.com/thumbnail?id={file_ref}&sz={size_param}"
-    async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
-        res = await client.get(url)
-    if res.status_code != 200:
-        raise HTTPException(404, "Image not found or folder is no longer public")
-    return res.content, res.headers.get("content-type", "image/jpeg")
+    async with _thumb_slots:
+        async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
+            for attempt in range(MAX_ATTEMPTS):
+                res = await client.get(url)
+                if res.status_code == 200:
+                    return res.content, res.headers.get("content-type", "image/jpeg")
+                log.warning("Drive thumbnail %s -> %s (attempt %d)", file_ref, res.status_code, attempt + 1)
+                if not _is_transient(res.status_code, "") or attempt == MAX_ATTEMPTS - 1:
+                    break
+                await _backoff(attempt, res)
+    if res.status_code == 429 or res.status_code >= 500:
+        raise HTTPException(503, "Google Drive is busy, please try again in a moment")
+    raise HTTPException(404, "Image not found or folder is no longer public")
 
 
 async def get_thumb(file_ref: str) -> tuple[bytes, str]:
@@ -129,21 +193,32 @@ async def stream_download(file_ref: str):
         raise HTTPException(500, "Server is missing DRIVE_API_KEY")
     url = f"https://www.googleapis.com/drive/v3/files/{file_ref}"
     async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
-        # Drive rate-limits (403/429) and hiccups (5xx) under concurrent
-        # downloads; retry those before any byte is sent, since after that
-        # the failure can only surface as a truncated/empty file.
-        for attempt in range(3):
+        # This is the only retry layer for opening a download (callers retry
+        # only mid-transfer cuts), so one file costs at most MAX_ATTEMPTS
+        # Drive requests even while throttled. Retries happen before any byte
+        # is sent; after that a failure can only surface as a truncated file.
+        for attempt in range(MAX_ATTEMPTS):
+            await _pace()
             req = client.build_request("GET", url, params={"alt": "media", "key": DRIVE_API_KEY})
             res = await client.send(req, stream=True)
             if res.status_code == 200:
                 break
             status = res.status_code
+            reason = await _error_reason(res)
+            log.warning("Drive download %s -> %s %s (attempt %d/%d)",
+                        file_ref, status, reason or "-", attempt + 1, MAX_ATTEMPTS)
+            if reason == "downloadQuotaExceeded":
+                # Google's per-file download cap; retrying only digs deeper.
+                await res.aclose()
+                raise HTTPException(503, "Google has temporarily limited downloads of this file, please try again later")
+            if not _is_transient(status, reason):
+                await res.aclose()
+                raise HTTPException(404, f"File {file_ref} not found or not public")
+            if attempt == MAX_ATTEMPTS - 1:
+                await res.aclose()
+                raise HTTPException(503, "Google Drive is busy, please try again in a moment")
+            await _backoff(attempt, res)
             await res.aclose()
-            if status == 404 or attempt == 2:
-                raise HTTPException(404 if status == 404 else 503,
-                                    f"File {file_ref} not found or not public" if status == 404
-                                    else "Google Drive is busy, please try again in a moment")
-            await asyncio.sleep(0.5 * 2 ** attempt)
         try:
             async for chunk in res.aiter_bytes():
                 yield chunk
