@@ -1,0 +1,4 @@
+public/
+.wrangler/
+.dev.vars
+import.sql

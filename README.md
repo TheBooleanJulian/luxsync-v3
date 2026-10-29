@@ -119,6 +119,36 @@ Without Dropbox credentials configured, Drive links keep working exactly as befo
 
 Without `CDN_BASE_URL`, images are still cached in B2/R2 — they're just proxied through this server on every request instead of redirected.
 
+## Cloudflare Worker (Zeabur migration target)
+
+`worker/` is a JavaScript port of the FastAPI backend for Cloudflare Workers (Zeabur shuts down on Dec 31). The Python app above keeps serving from Zeabur until cutover; `index.html`, `admin.html` and `static/` are shared, so the frontend needs no changes.
+
+| Python app | Worker |
+|---|---|
+| FastAPI + slowapi | `worker/src/index.js` + Workers Rate Limiting bindings |
+| SQLite `data/luxsync.db` | D1 (`DB` binding, `worker/schema.sql`) |
+| boto3 + B2/R2 over S3 | R2 binding (`CACHE`), no S3 keys |
+| stream-zip | `worker/src/zip.js` (store-only streaming ZIP) |
+| in-memory zip progress | Cache API (`worker/src/jobs.js`) |
+
+Setup (needs the **Workers Paid** plan — zips are built in-Worker and exceed the free plan's 10 ms CPU limit):
+
+```bash
+cd worker
+npx wrangler d1 create luxsync-log            # paste database_id into wrangler.jsonc
+npx wrangler d1 execute luxsync-log --remote --file=schema.sql
+npx wrangler r2 bucket create luxsync-cache
+for s in DRIVE_API_KEY ADMIN_PASSWORD ADMIN_USERNAME IP_HASH_SALT; do npx wrangler secret put $s; done
+# Dropbox (optional): DROPBOX_APP_KEY, DROPBOX_APP_SECRET, DROPBOX_REFRESH_TOKEN
+npm run deploy                                # copies index.html + static/ into worker/public, then wrangler deploy
+```
+
+Carrying the email log over: export the Python app's `/admin` data (`/api/admin/downloads?view=gallery&limit=500` and `view=photo`) as `gallery.json` / `photo.json`, then `node scripts/import-log.mjs <dir>` writes `import.sql`; run it with `npx wrangler d1 execute luxsync-log --remote --file=<dir>/import.sql`. It keeps original ids and is safe to re-run. The import contains emails — keep it out of git.
+
+Local dev: put secrets in `worker/.dev.vars` (git-ignored), `npm run dev`. Tests: `cd worker && npm test` (zip output is verified with Python's `zipfile`).
+
+Differences from the Python app to know about: Drive request pacing is per Worker isolate rather than global; zip progress is best-effort per data centre; videos are cached in R2 only up to 64 MB; the `CDN_BASE_URL` redirect is gone (the Worker serves R2 directly with long browser caching). Cutover (custom domain route in `wrangler.jsonc`, DNS) is a separate, explicit step.
+
 ## Screenshots
 
 ![LuxSync banner](assets/luxsync%20banner%20v3.png)
@@ -139,6 +169,7 @@ luxsync-v3/
 ├── index.html                                 # Single-file frontend (no build step)
 ├── admin.html                                 # Single-file admin dashboard, served at /admin
 ├── tests/                                     # python -m unittest discover tests
+├── worker/                                    # Cloudflare Worker port (see section above)
 ├── requirements.txt
 ├── Procfile                                   # Zeabur / Heroku process definition
 ├── .env.example                               # Required/optional env vars
