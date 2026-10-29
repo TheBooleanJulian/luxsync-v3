@@ -43,8 +43,10 @@
 
   // Plain-text vars. Secrets (DRIVE_API_KEY, ADMIN_PASSWORD, ADMIN_USERNAME,
   // IP_HASH_SALT, DROPBOX_*) are set with `npx wrangler secret put NAME`.
-  "vars": { "FOLDER_CACHE_TTL_SECONDS": "600" }
+  "vars": { "FOLDER_CACHE_TTL_SECONDS": "600" },
 
-  // Cutover (not yet): attach the production domain.
-  // "routes": [{ "pattern": "luxsync-v3.thebooleanjulian.dev", "custom_domain": true }]
+  // Production domain. The Cache API (zip progress) only works on custom
+  // domains. Overrides the *.thebooleanjulian.dev wildcard A record to Zeabur
+  // for this host; rollback = remove this route and redeploy.
+  "routes": [{ "pattern": "luxsync-v3.thebooleanjulian.dev", "custom_domain": true }]
 }
