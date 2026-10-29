@@ -1,0 +1,52 @@
+{
+  // LuxSync v3 Worker. The Python/FastAPI app in the repo root keeps serving
+  // from Zeabur until cutover; this folder is the Cloudflare replacement.
+  "name": "luxsync-v3",
+  "account_id": "c580c4403524273d1bece674117472dd", // accurova account (owns thebooleanjulian.dev)
+  "main": "src/index.js",
+  "compatibility_date": "2026-10-01",
+
+  // Zips are built in-Worker (CRC32 over every photo), so they need more CPU
+  // than the default. Requires the Workers Paid plan (the free plan caps CPU at 10 ms).
+  "limits": { "cpu_ms": 300000 },
+
+  // "/" and "/static/*" are served straight from ./public (copied from the repo
+  // root by scripts/sync-assets.mjs) without running the Worker; only API
+  // and admin routes run it.
+  "assets": {
+    "directory": "./public",
+    "run_worker_first": ["/api/*", "/admin", "/admin/*"]
+  },
+
+  // Download log (created 2026-10-29; schema applied with
+  // `npx wrangler d1 execute luxsync-log --remote --file=schema.sql`).
+  "d1_databases": [
+    { "binding": "DB", "database_name": "luxsync-log", "database_id": "3df2aae2-b4f7-426c-ac53-1b4f2e046d79" }
+  ],
+
+  // Thumbnail / full-image / video / folder-listing cache (bucket created 2026-10-29).
+  "r2_buckets": [
+    { "binding": "CACHE", "bucket_name": "luxsync-cache" }
+  ],
+
+  // Per-IP rate limits (replace slowapi). namespace_id just has to be unique in the account.
+  "ratelimits": [
+    { "name": "RL_GALLERY", "namespace_id": "7101", "simple": { "limit": 20, "period": 60 } },
+    { "name": "RL_THUMB", "namespace_id": "7102", "simple": { "limit": 300, "period": 60 } },
+    { "name": "RL_FULL", "namespace_id": "7103", "simple": { "limit": 120, "period": 60 } },
+    { "name": "RL_STREAM", "namespace_id": "7104", "simple": { "limit": 30, "period": 60 } },
+    { "name": "RL_DOWNLOAD", "namespace_id": "7105", "simple": { "limit": 60, "period": 60 } },
+    { "name": "RL_ZIP", "namespace_id": "7106", "simple": { "limit": 10, "period": 60 } },
+    { "name": "RL_PROGRESS", "namespace_id": "7107", "simple": { "limit": 180, "period": 60 } },
+    { "name": "RL_ADMIN", "namespace_id": "7108", "simple": { "limit": 60, "period": 60 } }
+  ],
+
+  // Plain-text vars. Secrets (DRIVE_API_KEY, ADMIN_PASSWORD, ADMIN_USERNAME,
+  // IP_HASH_SALT, DROPBOX_*) are set with `npx wrangler secret put NAME`.
+  "vars": { "FOLDER_CACHE_TTL_SECONDS": "600" },
+
+  // Production domain. The Cache API (zip progress) only works on custom
+  // domains. Overrides the *.thebooleanjulian.dev wildcard A record to Zeabur
+  // for this host; rollback = remove this route and redeploy.
+  "routes": [{ "pattern": "luxsync-v3.thebooleanjulian.dev", "custom_domain": true }]
+}
