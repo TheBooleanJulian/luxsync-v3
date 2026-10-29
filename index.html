@@ -386,39 +386,60 @@
   .gate-actions{display:flex; justify-content:flex-end; gap:10px; margin-top:20px;}
 
   /* ---------- now downloading panel ---------- */
-  @keyframes dlSlide{ from{ transform:translateX(-100%); } to{ transform:translateX(250%); } }
+  @keyframes dlSlide{ from{ transform:translateX(-100%); } to{ transform:translateX(260%); } }
   .dl{
     position:fixed; inset:0; z-index:210; display:none; align-items:center; justify-content:center;
-    background:rgba(3,3,5,0.82); backdrop-filter:blur(6px); padding:20px;
+    background:rgba(3,3,5,0.86); backdrop-filter:blur(6px); padding:16px;
   }
   .dl.open{display:flex;}
   .dl-card{
-    width:100%; max-width:520px; max-height:calc(100vh - 40px); display:flex; flex-direction:column;
-    background:var(--panel); border:1px solid var(--line-strong); border-radius:var(--radius); padding:26px;
+    width:100%; max-width:560px; max-height:calc(100vh - 32px); overflow-y:auto; display:flex; flex-direction:column;
+    background:var(--panel); border:1px solid var(--line-strong); border-radius:var(--radius); padding:clamp(18px,4vw,30px);
   }
   .dl-card h2{
     font-family:'JetBrains Mono',monospace; font-size:12px; letter-spacing:0.18em;
-    text-transform:uppercase; color:var(--teal); margin-bottom:6px;
+    text-transform:uppercase; color:var(--teal); margin-bottom:18px;
   }
-  .dl-summary{font-size:13.5px; color:var(--ink-dim); margin-bottom:14px;}
-  .dl-summary b{color:var(--gold); font-weight:600;}
-  .dl-track{height:4px; background:var(--void); border-radius:2px; overflow:hidden; position:relative;}
+  .dl-hero{display:flex; align-items:baseline; gap:16px; margin-bottom:14px;}
+  .dl-pct{font-size:clamp(40px,11vw,56px); font-weight:600; line-height:1; color:var(--ink); min-width:3.3ch;}
+  .dl-count{font-size:16px; font-weight:500; color:var(--ink);}
+  .dl-sub{font-size:12px; color:var(--ink-dim); margin-top:5px; min-height:1.2em;}
+  .dl-bar{height:14px; background:var(--void); border:1px solid var(--line-strong); border-radius:2px; overflow:hidden; position:relative;}
+  .dl-bar i{display:block; height:100%; width:0; background:var(--teal); box-shadow:0 0 14px rgba(0,212,200,0.45); transition:width 0.35s ease;}
+  .dl-bar.indeterminate i{width:35%; animation:dlSlide 1.2s ease-in-out infinite;}
+  .dl-card.has-errors .dl-bar i{background:var(--gold); box-shadow:0 0 14px rgba(245,200,66,0.35);}
+  .dl-now{font-size:12px; color:var(--ink-dim); margin-top:10px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-height:1.2em;}
+  .dl-keep{font-size:13px; color:var(--ink-dim); margin-top:10px; line-height:1.5;}
+  .dl-report{margin-top:18px; border:1.5px solid #ff6b6b; border-radius:var(--radius); padding:14px 16px; background:rgba(255,107,107,0.06);}
+  .dl-report[hidden]{display:none;}
+  .dl-report-title{font-size:13.5px; font-weight:600; color:#ff9b9b; margin-bottom:10px;}
+  .dl-report-codes{list-style:none; margin-bottom:12px; font-size:13px; line-height:1.5; color:var(--ink);}
+  .dl-report-codes li{margin-bottom:6px;}
+  .dl-report-codes b{font-family:'JetBrains Mono',monospace; color:#ff9b9b; margin-right:6px;}
+  .dl-report-body{
+    font-size:11.5px; line-height:1.6; color:var(--ink-dim); background:var(--void); border:1px solid var(--line);
+    border-radius:var(--radius); padding:10px 12px; white-space:pre-wrap; word-break:break-word; margin-bottom:12px;
+  }
+  .dl-toggle{
+    align-self:flex-start; margin-top:16px; background:none; border:none; color:var(--teal); font:inherit;
+    font-size:12.5px; cursor:pointer; padding:0; text-decoration:underline;
+  }
+  .dl-list{list-style:none; margin:10px 0 0; max-height:34vh; overflow-y:auto; border-top:1px solid var(--line);}
+  .dl-list[hidden]{display:none;}
+  .dl-row{padding:8px 2px; border-bottom:1px solid var(--line);}
+  .dl-row-top{display:flex; justify-content:space-between; gap:12px; align-items:baseline; margin-bottom:6px;}
+  .dl-name{font-size:12.5px; color:var(--ink); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0;}
+  .dl-note{font-size:11px; color:var(--ink-faint); white-space:nowrap; flex-shrink:0;}
+  .dl-track{height:3px; background:var(--void); border-radius:2px; overflow:hidden; position:relative;}
   .dl-track i{display:block; height:100%; width:0; background:var(--teal); transition:width 0.25s ease;}
   .dl-track.indeterminate i{width:40%; animation:dlSlide 1.3s ease-in-out infinite;}
-  .dl-list{
-    list-style:none; margin:18px 0 0; overflow-y:auto; min-height:0;
-    border-top:1px solid var(--line);
-  }
-  .dl-row{padding:10px 2px; border-bottom:1px solid var(--line);}
-  .dl-row-top{display:flex; justify-content:space-between; gap:12px; align-items:baseline; margin-bottom:7px;}
-  .dl-name{font-size:13px; color:var(--ink); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0;}
-  .dl-note{font-size:11px; color:var(--ink-faint); white-space:nowrap; flex-shrink:0;}
   .dl-row[data-status="active"] .dl-note{color:var(--teal);}
   .dl-row[data-status="done"] .dl-note, .dl-row[data-status="sent"] .dl-note{color:var(--gold);}
   .dl-row[data-status="error"] .dl-note{color:#ff6b6b;}
   .dl-row[data-status="pending"] .dl-track{opacity:0.5;}
   .dl-row[data-status="done"] .dl-track i, .dl-row[data-status="sent"] .dl-track i{width:100%;}
   .dl-row[data-status="error"] .dl-track i{width:100%; background:#ff6b6b;}
+  .dl-row[data-status="skipped"] .dl-track{opacity:0.35;}
   .dl-retry{
     background:none; border:none; color:var(--teal); font:inherit; cursor:pointer;
     text-decoration:underline; margin-left:8px; padding:0;
@@ -542,10 +563,25 @@
 
 <!-- Now downloading: progress for single and zip downloads -->
 <div class="dl" id="dl" role="dialog" aria-live="polite" aria-labelledby="dlTitle">
-  <div class="dl-card">
+  <div class="dl-card" id="dlCard">
     <h2 id="dlTitle">Now downloading</h2>
-    <div class="dl-summary mono" id="dlSummary"></div>
-    <div class="dl-track" id="dlOverall"><i></i></div>
+    <div class="dl-hero">
+      <div class="dl-pct mono" id="dlPct">0%</div>
+      <div>
+        <div class="dl-count" id="dlCount">Starting…</div>
+        <div class="dl-sub mono" id="dlSub"></div>
+      </div>
+    </div>
+    <div class="dl-bar indeterminate" id="dlOverall"><i></i></div>
+    <div class="dl-now mono" id="dlNow"></div>
+    <div class="dl-keep" id="dlKeep"></div>
+    <div class="dl-report" id="dlReport" hidden>
+      <div class="dl-report-title">Something went wrong. Screenshot this box and send it to your photographer.</div>
+      <ul class="dl-report-codes" id="dlReportCodes"></ul>
+      <pre class="dl-report-body mono" id="dlReportBody"></pre>
+      <button type="button" class="btn" id="dlCopy">Copy details</button>
+    </div>
+    <button type="button" class="dl-toggle" id="dlToggle" hidden></button>
     <ul class="dl-list" id="dlList"></ul>
     <div class="dl-actions"><button type="button" class="btn" id="dlClose">Hide</button></div>
   </div>
@@ -861,26 +897,60 @@
   // Rows are created once and updated in place. A row's status is one of
   // pending | active | done | sent | error ("sent" = handed to the browser's
   // own download manager, so there's nothing more to track).
+  //
+  // Every failure carries an error code (LS-...) + message (+ a reference that
+  // the server logs), collected into a screenshot-friendly report. Codes
+  // raised on the server live in errors.py; the browser-side ones are here.
+  const LS_MESSAGES = {
+    'LS-NET-OFF': 'Your internet connection dropped during the download.',
+    'LS-NET-CUT': 'The download was cut off before it finished.',
+    'LS-JOB-LOST': 'The server never confirmed this download (it may have been rejected or restarted).',
+    'LS-LIMIT': 'Too many downloads in a short time. Wait a minute, then try again.',
+  };
+  const lsError = (code, message, ref)=> ({ code, message: message || LS_MESSAGES[code] || 'Unexpected error.', ref: ref || '' });
+
+  async function errorFromResponse(res){
+    let detail;
+    try { detail = (await res.json()).detail; } catch(e){}
+    if(detail && typeof detail === 'object' && detail.code) return lsError(detail.code, detail.message, detail.ref);
+    if(res.status === 429) return lsError('LS-LIMIT');
+    return lsError(`LS-HTTP-${res.status}`, typeof detail === 'string' ? detail : 'The server returned an error.');
+  }
+
   const dlEls = {
-    root: document.getElementById('dl'), summary: document.getElementById('dlSummary'),
-    overall: document.getElementById('dlOverall'), list: document.getElementById('dlList'),
+    root: document.getElementById('dl'), card: document.getElementById('dlCard'),
+    pct: document.getElementById('dlPct'), count: document.getElementById('dlCount'),
+    sub: document.getElementById('dlSub'), now: document.getElementById('dlNow'),
+    keep: document.getElementById('dlKeep'), overall: document.getElementById('dlOverall'),
+    report: document.getElementById('dlReport'), reportCodes: document.getElementById('dlReportCodes'),
+    reportBody: document.getElementById('dlReportBody'), copy: document.getElementById('dlCopy'),
+    toggle: document.getElementById('dlToggle'), list: document.getElementById('dlList'),
     close: document.getElementById('dlClose'),
   };
-  let dlRows = [];   // { li, track, note, status, text, frac }
+  const DL_COLLAPSE_ABOVE = 12;   // longer lists start collapsed behind a toggle
+  const pageTitle = document.title;
+  let dlRows = [];   // { li, track, note, bar, name, status, text, frac, err }
   let dlJobs = [];   // zip jobs polled from /api/download-progress: { id, rows, born, done }
-  let dlTimer = null;
-  const dlSettled = (r)=> r.status === 'done' || r.status === 'sent' || r.status === 'error';
+  let dlTimer = null, dlTick = null;
+  let dlStart = 0, dlListOpen = null, dlReportKey = '';
+  const dlSettled = (r)=> r.status === 'done' || r.status === 'sent' || r.status === 'error' || r.status === 'skipped';
 
   function fmtBytes(n){
     if(n < 1024 * 1024) return `${Math.max(1, Math.round(n / 1024))} KB`;
     return `${(n / 1024 / 1024).toFixed(1)} MB`;
+  }
+  function fmtTime(sec){
+    sec = Math.max(0, Math.round(sec));
+    return `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`;
   }
 
   function dlAddRows(names){
     // A new download after the previous batch finished starts a fresh list.
     if(dlRows.length && dlRows.every(dlSettled) && !dlJobs.some(j=> !j.done)){
       dlRows = []; dlJobs = []; dlEls.list.textContent = '';
+      dlStart = 0; dlListOpen = null; dlReportKey = '';
     }
+    if(!dlStart) dlStart = Date.now();
     const rows = names.map((name)=>{
       const li = document.createElement('li');
       li.className = 'dl-row';
@@ -889,12 +959,13 @@
       li.querySelector('.dl-name').textContent = name;
       li.querySelector('.dl-name').title = name;
       dlEls.list.appendChild(li);
-      const row = { li, note: li.querySelector('.dl-note'), track: li.querySelector('.dl-track'),
-                    bar: li.querySelector('.dl-track i'), status: 'pending', text: 'Waiting', frac: null };
+      const row = { li, name, note: li.querySelector('.dl-note'), track: li.querySelector('.dl-track'),
+                    bar: li.querySelector('.dl-track i'), status: 'pending', text: 'Waiting', frac: null, err: null };
       dlRows.push(row);
       return row;
     });
     dlEls.root.classList.add('open');
+    if(!dlTick) dlTick = setInterval(dlRefresh, 1000);   // keeps elapsed/ETA moving between updates
     dlRefresh();
     return rows;
   }
@@ -903,31 +974,122 @@
   function dlSet(row, status, text, frac){
     if(row.status === status && row.text === text && row.frac === frac) return;
     row.status = status; row.text = text; row.frac = frac === undefined ? null : frac;
+    if(status !== 'error') row.err = null;
     row.li.dataset.status = status;
     row.note.textContent = text;
-    const known = status === 'active' && row.frac !== null;
     row.track.classList.toggle('indeterminate', status === 'active' && row.frac === null);
-    row.bar.style.width = known ? `${Math.round(row.frac * 100)}%` : '';
+    row.bar.style.width = status === 'active' && row.frac !== null ? `${Math.round(row.frac * 100)}%` : '';
     dlRefresh();
+  }
+
+  function dlFail(row, err){
+    row.err = err;
+    row.li.title = err.message;
+    dlSet(row, 'error', err.code, null);
+  }
+
+  function dlReportText(failedRows){
+    const codes = {};
+    failedRows.forEach(r=> { codes[r.err.code] = (codes[r.err.code] || 0) + 1; });
+    const refs = [...new Set(failedRows.map(r=> r.err.ref).filter(Boolean))];
+    const names = failedRows.slice(0, 8).map(r=> r.name);
+    return [
+      'LUXSYNC ERROR REPORT',
+      `Codes: ${Object.entries(codes).map(([c, n])=> n > 1 ? `${c} (x${n})` : c).join(', ')}`,
+      refs.length ? `Ref: ${refs.slice(0, 6).join(', ')}` : null,
+      `Failed: ${failedRows.length} of ${dlRows.length} file${dlRows.length === 1 ? '' : 's'}`,
+      dlRows.some(r=> r.status === 'skipped') ? 'Zip: stopped early, incomplete' : null,
+      `Files: ${names.join(', ')}${failedRows.length > names.length ? ', …' : ''}`,
+      `Gallery: ${currentGalleryName || '-'} (${currentSourceId || '-'})`,
+      `Time: ${new Date().toISOString()}`,
+      `Browser: ${navigator.userAgent}`,
+    ].filter(Boolean).join('\n');
   }
 
   function dlRefresh(){
     const total = dlRows.length;
-    const failed = dlRows.filter(r=> r.status === 'error').length;
+    const failedRows = dlRows.filter(r=> r.status === 'error');
+    const failed = failedRows.length;
+    const skipped = dlRows.filter(r=> r.status === 'skipped').length;   // never attempted: the zip stopped early
+    const succeeded = dlRows.filter(r=> r.status === 'done' || r.status === 'sent').length;
     const finished = dlRows.filter(dlSettled).length;
+    const active = dlRows.find(r=> r.status === 'active');
     const partial = dlRows.reduce((s, r)=> s + (r.status === 'active' && r.frac !== null ? r.frac : 0), 0);
     const allDone = total > 0 && finished === total && !dlJobs.some(j=> !j.done);
-    dlEls.overall.firstElementChild.style.width = total ? `${Math.round((finished + partial) / total * 100)}%` : '0';
-    if(allDone){
-      dlEls.summary.innerHTML = failed
-        ? `<b>${total - failed}</b> of ${total} files finished, ${failed} failed`
-        : `<b>All ${total}</b> file${total === 1 ? '' : 's'} sent — check your browser's downloads`;
-    } else {
-      dlEls.summary.innerHTML = `<b>${finished}</b> of ${total} file${total === 1 ? '' : 's'}`;
-    }
+    const idle = !allDone && finished === 0 && partial === 0;   // nothing completed yet: bar slides instead of sitting empty
+    const starting = idle && !active;                           // ...and nothing even in flight
+    const isZip = dlJobs.length > 0;
+    const pct = allDone ? Math.round(succeeded / total * 100) : Math.min(99, Math.floor((finished + partial) / total * 100));
+
+    // hero: big percentage + thick bar, so a long batch never looks hung
+    dlEls.card.classList.toggle('has-errors', failed > 0 || skipped > 0);
+    dlEls.overall.classList.toggle('indeterminate', idle);
+    dlEls.overall.firstElementChild.style.width = idle ? '' : `${pct}%`;
+    dlEls.pct.textContent = starting ? '…' : `${pct}%`;
+    dlEls.count.textContent = starting ? 'Starting…'
+      : total === 1 ? (allDone ? (failed ? 'Download failed' : 'Download complete') : 'Downloading your photo')
+      : allDone ? `${succeeded} of ${total} files done${failed ? ` · ${failed} failed` : ''}${skipped ? ` · ${skipped} not added` : ''}`
+      : `File ${Math.min(finished + 1, total)} of ${total}`;
+
+    const elapsed = dlStart ? (Date.now() - dlStart) / 1000 : 0;
+    let sub = '';
+    if(!allDone && total === 1 && active) sub = active.text;
+    else if(!allDone && total > 1){
+      sub = `${fmtTime(elapsed)} elapsed`;
+      const done = finished + partial;
+      if(done >= 3 && elapsed >= 3) sub += ` · about ${fmtTime((total - done) / (done / elapsed))} left`;
+    } else if(allDone) sub = `Took ${fmtTime(elapsed)}`;
+    dlEls.sub.textContent = sub;
+    dlEls.now.textContent = !allDone && active && total > 1 ? `Now: ${active.name}` : '';
+    dlEls.keep.textContent = allDone
+      ? (!isZip ? (failed ? '' : "Saved to your browser's downloads.")
+         : skipped ? "The zip stopped early, so it is incomplete."
+         : failed ? `Your zip is in your browser's downloads, without the ${failed} file${failed === 1 ? '' : 's'} listed below (also named in _MISSING_FILES.txt inside the zip).`
+         : "Done. Your zip is in your browser's downloads.")
+      : (total > 1 ? "Keep this tab open until it finishes. Your browser saves the zip as it arrives." : '');
+    document.title = allDone || starting ? pageTitle : `${pct}% · Downloading · ${pageTitle}`;
     dlEls.close.textContent = allDone ? 'Close' : 'Hide';
+    if(allDone && dlTick){ clearInterval(dlTick); dlTick = null; }
+
+    // error report: one line per distinct code + a copyable block to screenshot
+    const reportKey = failedRows.map(r=> r.err.code + r.err.ref).join('|');
+    dlEls.report.hidden = failed === 0;
+    if(failed && reportKey !== dlReportKey){
+      dlReportKey = reportKey;
+      const seen = new Map();
+      failedRows.forEach(r=> { if(!seen.has(r.err.code)) seen.set(r.err.code, r.err.message); });
+      dlEls.reportCodes.textContent = '';
+      seen.forEach((message, code)=> {
+        const li = document.createElement('li');
+        const b = document.createElement('b'); b.textContent = code;
+        li.appendChild(b); li.appendChild(document.createTextNode(message));
+        dlEls.reportCodes.appendChild(li);
+      });
+      dlEls.reportBody.textContent = dlReportText(failedRows);
+    }
+
+    // long lists collapse behind a toggle; the hero shows what's happening
+    const collapsible = total > DL_COLLAPSE_ABOVE;
+    const open = dlListOpen === null ? !collapsible : dlListOpen;
+    dlEls.toggle.hidden = !collapsible;
+    dlEls.toggle.textContent = open ? 'Hide file list' : `Show all ${total} files`;
+    dlEls.list.hidden = !open;
   }
   dlEls.close.addEventListener('click', ()=> dlEls.root.classList.remove('open'));
+  dlEls.toggle.addEventListener('click', ()=> {
+    dlListOpen = dlEls.list.hidden;   // currently hidden -> open it
+    dlRefresh();
+  });
+  dlEls.copy.addEventListener('click', async ()=> {
+    const text = dlEls.reportBody.textContent;
+    try { await navigator.clipboard.writeText(text); }
+    catch(e){
+      const range = document.createRange(); range.selectNodeContents(dlEls.reportBody);
+      const sel = getSelection(); sel.removeAllRanges(); sel.addRange(range);
+    }
+    dlEls.copy.textContent = 'Copied';
+    setTimeout(()=> { dlEls.copy.textContent = 'Copy details'; }, 2000);
+  });
 
   function saveBlob(blob, name){
     const url = URL.createObjectURL(blob);
@@ -974,11 +1136,7 @@
     dlSet(row, 'active', 'Connecting…', null);
     try{
       const res = await fetch(url);
-      if(!res.ok){
-        let detail = '';
-        try { detail = (await res.json()).detail; } catch(e){}
-        throw new Error(typeof detail === 'string' && detail ? detail : `Server error ${res.status}`);
-      }
+      if(!res.ok){ dlFail(row, await errorFromResponse(res)); return false; }
       const total = Number(res.headers.get('Content-Length')) || 0;
       let blob;
       if(res.body && res.body.getReader){
@@ -992,7 +1150,7 @@
           loaded += value.length;
           dlSet(row, 'active', total ? `${fmtBytes(loaded)} / ${fmtBytes(total)}` : fmtBytes(loaded), total ? loaded / total : null);
         }
-        if(total && loaded !== total) throw new Error('Download was cut off');
+        if(total && loaded !== total){ dlFail(row, lsError('LS-NET-CUT')); return false; }
         blob = new Blob(parts);
       } else {
         blob = await res.blob();
@@ -1001,7 +1159,7 @@
       dlSet(row, 'done', fmtBytes(blob.size), 1);
       return true;
     } catch(err){
-      dlSet(row, 'error', err instanceof TypeError ? 'Network error' : (err.message || 'Failed'));
+      dlFail(row, lsError('LS-NET-OFF'));
       return false;
     }
   }
@@ -1027,7 +1185,7 @@
         // never shows up the request was rejected or the server restarted.
         if(Date.now() - job.born > 15000){
           job.done = true;
-          job.rows.filter(r=> !dlSettled(r)).forEach(r=> dlSet(r, 'error', 'Could not start'));
+          job.rows.filter(r=> !dlSettled(r)).forEach(r=> dlFail(r, lsError('LS-JOB-LOST')));
         }
         continue;
       }
@@ -1035,14 +1193,19 @@
         const c = s.files[i];
         if(c === 'd') dlSet(row, 'done', 'In your zip', 1);
         else if(c === 'a') dlSet(row, 'active', s.bytes ? fmtBytes(s.bytes) : 'Fetching…', null);
-        else if(c === 'f') dlSet(row, 'error', 'Failed');
+        else if(c === 'f') dlFail(row, s.fail[i] ? lsError(s.fail[i].code, s.fail[i].message, s.fail[i].ref) : lsError('LS-ZIP-FAIL', 'This file could not be fetched.'));
       });
       if(s.state === 'done'){
         job.done = true;
         job.rows.filter(r=> !dlSettled(r)).forEach(r=> dlSet(r, 'done', 'In your zip', 1));
       } else if(s.state === 'error'){
         job.done = true;
-        job.rows.filter(r=> !dlSettled(r)).forEach(r=> dlSet(r, 'error', s.error || 'Interrupted'));
+        // The zip stopped early: the file it died on is already marked failed
+        // (s.fail); the rest were never attempted, so don't report them as failures.
+        const e = s.error || {};
+        const stalled = job.rows.filter(r=> !dlSettled(r));
+        if(!job.rows.some(r=> r.status === 'error') && stalled.length) dlFail(stalled[0], lsError(e.code || 'LS-ZIP-FAIL', e.message, e.ref));
+        job.rows.filter(r=> !dlSettled(r)).forEach(r=> dlSet(r, 'skipped', 'Not added', null));
       }
     }
     dlRefresh();

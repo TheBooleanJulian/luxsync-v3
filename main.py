@@ -24,6 +24,7 @@ import secrets
 import time
 from datetime import datetime
 from stat import S_IFREG
+from urllib.parse import quote
 
 import httpx
 from fastapi import Depends, FastAPI, Form, HTTPException, Request
@@ -39,6 +40,7 @@ from stream_zip import ZIP_32, async_stream_zip
 
 import cache
 import downloads
+from errors import LuxError, describe
 import providers.drive as drive_provider
 import providers.dropbox_provider as dropbox_provider
 
@@ -257,7 +259,7 @@ async def _prime_stream(stream):
     try:
         first = await it.__anext__()
     except StopAsyncIteration:
-        raise HTTPException(502, "The source returned an empty file")
+        raise LuxError(502, "LS-SRC-EMPTY")
 
     async def rest():
         yield first
@@ -282,7 +284,8 @@ JOBS: dict = {}
 
 
 def _new_job(job_id: str, file_count: int) -> dict:
-    job = {"t": time.time(), "state": "running", "st": ["p"] * file_count, "bytes": 0, "error": ""}
+    job = {"t": time.time(), "state": "running", "st": ["p"] * file_count, "bytes": 0,
+           "fail": {}, "error": None}
     if JOB_ID_RE.match(job_id or ""):
         now = job["t"]
         for old_id in [k for k, v in JOBS.items() if now - v["t"] > JOB_TTL_SECONDS]:
@@ -309,12 +312,9 @@ async def _fetch_bytes(provider, file_ref: str, attempts: int = 3, progress=None
                 if progress:
                     progress(len(buf))
             return bytes(buf)
-        except HTTPException as exc:
-            if exc.status_code == 404 or attempt == attempts - 1:
-                raise
         except httpx.HTTPError:
             if attempt == attempts - 1:
-                raise HTTPException(503, "The source cut the download off, please try again")
+                raise LuxError(503, "LS-NET-CUT", f"file={file_ref}")
         await asyncio.sleep(0.5 * 2 ** attempt)
 
 
@@ -332,8 +332,7 @@ async def download_file(
         gallery_name=gallery, kind="photo", filenames=[name], ip=get_remote_address(request),
     )
 
-    safe_name = name.replace('"', "")
-    disposition = {"Content-Disposition": f'attachment; filename="{safe_name}"'}
+    disposition = {"Content-Disposition": _content_disposition(name)}
     if _is_video(name):
         return StreamingResponse(
             await _prime_stream(provider.stream_download(file_ref)),
@@ -341,8 +340,18 @@ async def download_file(
         )
     data = await _fetch_bytes(provider, file_ref)
     if not data:
-        raise HTTPException(502, "The source returned an empty file")
+        raise LuxError(502, "LS-SRC-EMPTY", f"file={file_ref}")
     return Response(content=data, media_type="application/octet-stream", headers=disposition)
+
+
+def _content_disposition(filename: str) -> str:
+    """Content-Disposition for a visitor/gallery-supplied filename. HTTP headers
+    are latin-1, so a name with e.g. a curly apostrophe would raise
+    UnicodeEncodeError (a 500) in a plain filename="..."; send an ASCII
+    fallback plus the RFC 5987 UTF-8 form."""
+    clean = re.sub(r'[\r\n"\\]', "", filename)
+    fallback = clean.encode("ascii", "replace").decode().replace("?", "_")
+    return f"attachment; filename=\"{fallback}\"; filename*=UTF-8''{quote(clean)}"
 
 
 def _require_email(raw: str) -> str:
@@ -386,8 +395,8 @@ async def download_progress(request: Request, jobs: str = ""):
     for job_id in jobs.split(",")[:20]:
         job = JOBS.get(job_id)
         if job:
-            out[job_id] = {"state": job["state"], "files": "".join(job["st"]),
-                           "bytes": job["bytes"], "error": job["error"]}
+            out[job_id] = {"state": job["state"], "files": "".join(job["st"]), "bytes": job["bytes"],
+                           "fail": {str(i): f for i, f in job["fail"].items()}, "error": job["error"]}
     return JSONResponse(out, headers={"Cache-Control": "no-store"})
 
 
@@ -443,32 +452,57 @@ async def download_zip(
     def set_bytes(n: int):
         job["bytes"] = n
 
-    async def member_content(i: int, file_ref: str, name: str):
-        job["st"][i], job["bytes"] = "a", 0
+    async def once(data: bytes):
+        yield data
+
+    async def video_content(i: int, file_ref: str):
+        # Videos stream straight through (too big to buffer), so a failure
+        # partway can't be skipped cleanly and ends the zip.
         try:
-            if _is_video(name):
-                async for chunk in provider_mod.stream_download(file_ref):
-                    job["bytes"] += len(chunk)
-                    yield chunk
-            else:
-                yield await _fetch_bytes(provider_mod, file_ref, progress=set_bytes)
-        except BaseException:
+            async for chunk in provider_mod.stream_download(file_ref):
+                job["bytes"] += len(chunk)
+                yield chunk
+        except Exception as exc:
             job["st"][i] = "f"
+            job["fail"][i] = describe(exc, f"zip member {names[i]}")
             raise
-        job["st"][i] = "d"
 
     async def members():
-        now = datetime.now()
+        # A photo that can't be fetched is skipped, not fatal: aborting would
+        # leave the visitor with an invalid zip. Skipped files are reported
+        # in the panel and listed in _MISSING_FILES.txt inside the zip.
+        now, mode = datetime.now(), S_IFREG | 0o644
+        missing = []
         for i, (file_ref, name) in enumerate(zip(refs, names)):
-            yield (name, now, S_IFREG | 0o644, ZIP_32, member_content(i, file_ref, name))
+            job["st"][i], job["bytes"] = "a", 0
+            if _is_video(name):
+                yield (name, now, mode, ZIP_32, video_content(i, file_ref))
+                job["st"][i] = "d"
+                continue
+            try:
+                data = await _fetch_bytes(provider_mod, file_ref, progress=set_bytes)
+            except Exception as exc:
+                job["st"][i] = "f"
+                job["fail"][i] = fail = describe(exc, f"zip member {name}")
+                missing.append(f"{name}  [{fail['code']} ref {fail['ref']}]")
+                continue
+            yield (name, now, mode, ZIP_32, once(data))
+            job["st"][i] = "d"   # reached once the zip has consumed this member
+        if missing:
+            note = ("These files could not be fetched and are NOT in this zip.\n"
+                    "Try downloading them again, or send the codes below to your photographer.\n\n"
+                    + "\n".join(missing) + "\n")
+            yield ("_MISSING_FILES.txt", now, mode, ZIP_32, once(note.encode()))
 
     async def tracked_zip():
         try:
             async for chunk in async_stream_zip(members()):
                 yield chunk
             job["state"] = "done"
-        except BaseException:
-            job["state"], job["error"] = "error", "The zip was interrupted"
+        except BaseException as exc:
+            job["state"] = "error"
+            job["error"] = describe(exc, "zip") if isinstance(exc, Exception) else {
+                "code": "LS-ZIP-FAIL", "message": "The download was cancelled or the connection closed.", "ref": ""}
             raise
 
     zip_filename = f"{_sanitize_zip_name(zip_name)}.zip"
@@ -476,7 +510,7 @@ async def download_zip(
     return StreamingResponse(
         tracked_zip(),
         media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="{zip_filename}"'},
+        headers={"Content-Disposition": _content_disposition(zip_filename)},
     )
 
 

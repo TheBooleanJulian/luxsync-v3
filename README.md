@@ -6,7 +6,7 @@
 
 **A premium, dependency-free photo gallery that turns any public Google Drive or Dropbox folder into a scrollable, previewable, downloadable client gallery.**
 
-![Version](https://img.shields.io/badge/version-0.10.0-00D4C8)
+![Version](https://img.shields.io/badge/version-0.11.0-00D4C8)
 ![Python](https://img.shields.io/badge/-Python-3776AB?logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/-FastAPI-009688?logo=fastapi&logoColor=white)
 ![Zeabur](https://img.shields.io/badge/-Zeabur-6C5CE7)
@@ -202,10 +202,36 @@ Ops & delivery
 - Dockerfile for local/self-hosted runs outside Zeabur, relevant now that AGPLv3 self-hosting is an explicit use case
 - Basic usage/audit logging per gallery (useful for the commercial-license track)
 
+## Download error codes
+
+When a download fails, the "Now downloading" panel shows an error box with a code, a plain-language message, a
+reference and a **Copy details** button — clients can screenshot it and send it to you. The reference (`ref`)
+is also written to the server log next to the details, so search Zeabur's logs for it
+(`LS-DRV-RATE ref=3FA91C status=503 file=... reason=userRateLimitExceeded`).
+
+| Code | Meaning | What to do |
+|---|---|---|
+| `LS-DRV-RATE` | Google Drive throttled the request and the retries ran out | Ask them to wait a minute and retry; if it recurs raise `DRIVE_MIN_INTERVAL_MS` |
+| `LS-DRV-FILE` | Google's per-file download cap for that file | Retry in a few hours; the real fix is caching originals |
+| `LS-DRV-GONE` | File deleted, moved, or no longer shared "Anyone with the link" | Check sharing in Drive |
+| `LS-DRV-CFG` | `DRIVE_API_KEY` missing on the server | Fix the env var |
+| `LS-NET-CUT` | Transfer from the source (or to the browser) dropped partway | Retry |
+| `LS-NET-OFF` | The visitor's own connection dropped (browser-side) | Retry |
+| `LS-SRC-EMPTY` | Source returned an empty file | Check the file in Drive |
+| `LS-ZIP-FAIL` | A zip was interrupted (video failed mid-stream, or the connection closed) | Retry |
+| `LS-JOB-LOST` | Server never confirmed the zip (rejected, or restarted mid-download) | Retry |
+| `LS-LIMIT` | Our own per-IP rate limit (slowapi) | Wait a minute |
+| `LS-HTTP-<n>` | Any other HTTP error, `<n>` is the status | Check logs |
+
+A photo that can't be fetched during a zip is skipped instead of aborting the zip: the zip stays valid, the panel
+lists the failed files, and a `_MISSING_FILES.txt` inside the zip names them with their codes.
+
 ## Changelog
 
 Summarised from commit history, most recent first. Versions follow `0.MINOR.PATCH` — MINOR for new features/architecture changes, PATCH for fixes.
 
+- **v0.11.0 — 2026-10-26 (error codes + prominent progress)** — Failed downloads now show an error box (`LS-...` code, message, server-logged reference, "Copy details") that clients can screenshot; see "Download error codes". The "Now downloading" panel leads with a large percentage, a thick progress bar, "File N of M", elapsed time and an ETA, so big batches never look hung (long file lists collapse behind a toggle; the tab title shows progress). A photo that can't be fetched no longer aborts the whole zip (which produced "invalid" zips): it is skipped, reported, and listed in `_MISSING_FILES.txt` inside the zip. New `errors.py`; progress endpoint now returns per-file failures.
+- **v0.10.1 — 2026-10-26 (Drive throttling)** — Clients hit "quota" errors on large downloads even though Drive's documented quota (325k units/user/min, 200 per download) was nowhere near. Cause: every visitor shares one API key and server IP, so a 300-photo zip looked like one heavy user bursting ~300 requests, and v0.10.0's retries stacked (stream_download x _fetch_bytes = up to 9 requests per throttled file) and treated every 403 as "missing file". Now: Drive request starts are paced globally (`DRIVE_MIN_INTERVAL_MS`, default 120), only transient errors are retried (429/5xx/rate-limit 403s, honouring `Retry-After`, with jitter, max 3 requests per file, single retry layer), a per-file `downloadQuotaExceeded` gets a clear message instead of retries, genuine 404/403-forbidden fail immediately, thumbnail fetches are capped at 10 concurrent with the same retry rules, and Google's real error reason is now logged (`luxsync.drive`) so throttling can be diagnosed from Zeabur logs.
 - **v0.10.0 — 2026-10-25 (download reliability + progress panel)** — Fixed downloads that arrived as 0-byte, corrupt or "invalid" zip files: errors raised mid-stream used to surface only after a 200 + attachment header had already been sent, so Drive rate limits (403/429/5xx) or a cut-off transfer produced a broken file. Drive downloads now retry transient errors, photos are fetched whole (with retries) and sent with a correct `Content-Length` so a short transfer fails loudly instead of saving a corrupt file, and upstream failures return a real HTTP error. Zip names no longer end in `.zip.zip`. New "Now downloading" panel shows every single/selected/all download with an overall progress bar and a per-file list; single photos show real byte progress, zips report per-file status via the new `GET /api/download-progress` (in-memory job registry; `download-zip` takes an optional `job_id`). Videos still stream and are handed to the browser's download manager.
 - **v0.9.0 — 2026-10-05 (inline video playback)** — Added `GET /api/stream/{provider}/{file_ref}`, which tees a video's bytes to the client while buffering them in memory, then caches the full file in S3-compatible storage the same way thumbnails/full images already are (served via the CDN redirect when `CDN_BASE_URL` is set). Clicking a video now opens the lightbox and plays it inline via a `<video>` element instead of downloading directly; the grid badge is a play icon again. No range-request support yet, so playback can't seek ahead of the buffered range.
 - **v0.8.0 — 2026-10-05 (video delivery)** — Galleries can now include video files, not just photos. Both providers list files with a video mimetype/extension alongside images, and reuse their existing thumbnail APIs to generate a frame thumbnail for video files too (no ffmpeg needed) — the grid overlays a play icon on top, falling back to a generic badge if thumbnail generation 404s for an unsupported codec/container. Clicking a video downloads it directly rather than opening it in the lightbox. Download-all and multi-select zip already worked for arbitrary file types, so no changes were needed there.

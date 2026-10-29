@@ -1,9 +1,12 @@
 """Download-email logging and admin auth. Run: python -m unittest discover tests"""
+import io
 import os
 import sys
+import zipfile
 import tempfile
 from contextlib import closing
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 _tmp = tempfile.mkdtemp()
@@ -28,7 +31,13 @@ async def _no_sleep(_seconds):
 class DownloadTracking(unittest.TestCase):
     def setUp(self):
         main.limiter.enabled = False
-        main.drive_provider.stream_download = _fake_stream
+        # Self-cleaning, so later tests (and other test files) see the real
+        # functions; tests below re-assign stream_download freely.
+        for target, name, value in ((main.drive_provider, "stream_download", _fake_stream),
+                                    (main.asyncio, "sleep", _no_sleep)):
+            patcher = mock.patch.object(target, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
         self.client = TestClient(main.app)
         self.auth = ("admin", "secret")
         with closing(downloads._connect()) as conn, conn:
@@ -86,7 +95,6 @@ class DownloadTracking(unittest.TestCase):
                 raise main.httpx.ReadError("cut off")
             yield b"-rest"
         main.drive_provider.stream_download = flaky
-        main.asyncio.sleep = _no_sleep
         r = self.client.get("/api/download/drive/abc1234567?name=a.jpg&email=kai@x.com")
         self.assertEqual((r.status_code, r.content), (200, b"half-rest"))
         self.assertEqual(r.headers["content-length"], "9")
@@ -96,7 +104,6 @@ class DownloadTracking(unittest.TestCase):
             yield b"half"
             raise main.httpx.ReadError("cut off")
         main.drive_provider.stream_download = broken
-        main.asyncio.sleep = _no_sleep
         r = self.client.get("/api/download/drive/abc1234567?name=a.jpg&email=kai@x.com")
         self.assertEqual(r.status_code, 503)
 
@@ -106,24 +113,41 @@ class DownloadTracking(unittest.TestCase):
             "files": files, "email": "kai@x.com", "job_id": "job1234567890abcd"})
         self.assertEqual(r.status_code, 200)
         r = self.client.get("/api/download-progress?jobs=job1234567890abcd,unknownjob123456")
-        self.assertEqual(r.json(), {"job1234567890abcd": {"state": "done", "files": "dd", "bytes": 4, "error": ""}})
+        self.assertEqual(r.json(), {"job1234567890abcd": {"state": "done", "files": "dd", "bytes": 4, "fail": {}, "error": None}})
 
-    def test_zip_progress_marks_failed_file(self):
-        async def broken(file_ref):
-            raise main.HTTPException(404, "gone")
-            yield  # pragma: no cover
-        main.drive_provider.stream_download = broken
-        files = '[{"id":"abc1234567","name":"a.jpg"}]'
-        try:
-            self.client.post("/api/download-zip", data={
-                "files": files, "email": "kai@x.com", "job_id": "jobfail1234567890"})
-        except Exception:
-            pass  # the aborted stream surfaces in the test client; the job state is what matters
+    def test_failed_photo_is_skipped_not_fatal_to_the_zip(self):
+        # One unfetchable photo must not abort the zip (that left visitors with
+        # an "invalid" zip): it is skipped, reported, and listed in the zip.
+        async def one_missing(file_ref):
+            if file_ref == "def4567890":
+                raise main.LuxError(404, "LS-DRV-GONE", "test")
+            yield b"photo-bytes"
+        main.drive_provider.stream_download = one_missing
+        files = '[{"id":"abc1234567","name":"a.jpg"},{"id":"def4567890","name":"b.jpg"},{"id":"ghi7890123","name":"c.jpg"}]'
+        r = self.client.post("/api/download-zip", data={
+            "files": files, "email": "kai@x.com", "job_id": "jobfail1234567890"})
+        self.assertEqual(r.status_code, 200)
+        with zipfile.ZipFile(io.BytesIO(r.content)) as z:
+            self.assertIsNone(z.testzip())
+            self.assertEqual(z.namelist(), ["a.jpg", "c.jpg", "_MISSING_FILES.txt"])
+            note = z.read("_MISSING_FILES.txt").decode()
         job = self.client.get("/api/download-progress?jobs=jobfail1234567890").json()["jobfail1234567890"]
-        self.assertEqual((job["state"], job["files"]), ("error", "f"))
+        self.assertEqual((job["state"], job["files"], job["error"]), ("done", "dfd", None))
+        self.assertEqual(job["fail"]["1"]["code"], "LS-DRV-GONE")
+        self.assertIn(f"b.jpg  [LS-DRV-GONE ref {job['fail']['1']['ref']}]", note)
 
     def test_zip_name_not_doubled(self):
         self.assertEqual(main._sanitize_zip_name("Hatsunemelvin V6 Miku MBS.zip"), "Hatsunemelvin V6 Miku MBS")
+
+    def test_non_ascii_names_do_not_500(self):
+        # Curly apostrophe in the gallery/file name used to crash the header encode.
+        name = "Julian’s Shoot — café"
+        files = '[{"id":"abc1234567","name":"%s.jpg"},{"id":"def4567890","name":"b.jpg"}]' % name
+        r = self.client.post("/api/download-zip", data={"files": files, "email": "kai@x.com", "zip_name": name})
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("filename*=UTF-8''Julian%E2%80%99s", r.headers["content-disposition"])
+        r = self.client.get("/api/download/drive/abc1234567", params={"name": name + ".jpg", "email": "kai@x.com"})
+        self.assertEqual(r.status_code, 200)
 
     def test_admin_requires_password(self):
         self.assertEqual(self.client.get("/api/admin/stats").status_code, 401)
