@@ -2,6 +2,7 @@
   // LuxSync v3 Worker. The Python/FastAPI app in the repo root keeps serving
   // from Zeabur until cutover; this folder is the Cloudflare replacement.
   "name": "luxsync-v3",
+  "account_id": "c580c4403524273d1bece674117472dd", // accurova account (owns thebooleanjulian.dev)
   "main": "src/index.js",
   "compatibility_date": "2026-10-01",
 
@@ -17,14 +18,13 @@
     "run_worker_first": ["/api/*", "/admin", "/admin/*"]
   },
 
-  // Download log. Create with `npx wrangler d1 create luxsync-log`, paste the
-  // database_id here, then `npx wrangler d1 execute luxsync-log --remote --file=schema.sql`.
+  // Download log (created 2026-10-29; schema applied with
+  // `npx wrangler d1 execute luxsync-log --remote --file=schema.sql`).
   "d1_databases": [
-    { "binding": "DB", "database_name": "luxsync-log", "database_id": "REPLACE_WITH_D1_ID" }
+    { "binding": "DB", "database_name": "luxsync-log", "database_id": "3df2aae2-b4f7-426c-ac53-1b4f2e046d79" }
   ],
 
-  // Thumbnail / full-image / video / folder-listing cache.
-  // Create with `npx wrangler r2 bucket create luxsync-cache`.
+  // Thumbnail / full-image / video / folder-listing cache (bucket created 2026-10-29).
   "r2_buckets": [
     { "binding": "CACHE", "bucket_name": "luxsync-cache" }
   ],
