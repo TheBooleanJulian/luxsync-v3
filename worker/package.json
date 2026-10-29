@@ -1,0 +1,11 @@
+{
+  "name": "luxsync-v3-worker",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "sync": "node scripts/sync-assets.mjs",
+    "test": "node --test",
+    "dev": "node scripts/sync-assets.mjs && npx wrangler dev",
+    "deploy": "node scripts/sync-assets.mjs && npx wrangler deploy"
+  }
+}
