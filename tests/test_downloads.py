@@ -125,6 +125,16 @@ class DownloadTracking(unittest.TestCase):
     def test_zip_name_not_doubled(self):
         self.assertEqual(main._sanitize_zip_name("Hatsunemelvin V6 Miku MBS.zip"), "Hatsunemelvin V6 Miku MBS")
 
+    def test_non_ascii_names_do_not_500(self):
+        # Curly apostrophe in the gallery/file name used to crash the header encode.
+        name = "Julian’s Shoot — café"
+        files = '[{"id":"abc1234567","name":"%s.jpg"},{"id":"def4567890","name":"b.jpg"}]' % name
+        r = self.client.post("/api/download-zip", data={"files": files, "email": "kai@x.com", "zip_name": name})
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("filename*=UTF-8''Julian%E2%80%99s", r.headers["content-disposition"])
+        r = self.client.get("/api/download/drive/abc1234567", params={"name": name + ".jpg", "email": "kai@x.com"})
+        self.assertEqual(r.status_code, 200)
+
     def test_admin_requires_password(self):
         self.assertEqual(self.client.get("/api/admin/stats").status_code, 401)
         self.assertEqual(self.client.get("/api/admin/stats", auth=("a", "wrong")).status_code, 401)
