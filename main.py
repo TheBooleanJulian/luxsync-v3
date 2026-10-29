@@ -24,6 +24,7 @@ import secrets
 import time
 from datetime import datetime
 from stat import S_IFREG
+from urllib.parse import quote
 
 import httpx
 from fastapi import Depends, FastAPI, Form, HTTPException, Request
@@ -331,8 +332,7 @@ async def download_file(
         gallery_name=gallery, kind="photo", filenames=[name], ip=get_remote_address(request),
     )
 
-    safe_name = name.replace('"', "")
-    disposition = {"Content-Disposition": f'attachment; filename="{safe_name}"'}
+    disposition = {"Content-Disposition": _content_disposition(name)}
     if _is_video(name):
         return StreamingResponse(
             await _prime_stream(provider.stream_download(file_ref)),
@@ -342,6 +342,16 @@ async def download_file(
     if not data:
         raise LuxError(502, "LS-SRC-EMPTY", f"file={file_ref}")
     return Response(content=data, media_type="application/octet-stream", headers=disposition)
+
+
+def _content_disposition(filename: str) -> str:
+    """Content-Disposition for a visitor/gallery-supplied filename. HTTP headers
+    are latin-1, so a name with e.g. a curly apostrophe would raise
+    UnicodeEncodeError (a 500) in a plain filename="..."; send an ASCII
+    fallback plus the RFC 5987 UTF-8 form."""
+    clean = re.sub(r'[\r\n"\\]', "", filename)
+    fallback = clean.encode("ascii", "replace").decode().replace("?", "_")
+    return f"attachment; filename=\"{fallback}\"; filename*=UTF-8''{quote(clean)}"
 
 
 def _require_email(raw: str) -> str:
@@ -500,7 +510,7 @@ async def download_zip(
     return StreamingResponse(
         tracked_zip(),
         media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="{zip_filename}"'},
+        headers={"Content-Disposition": _content_disposition(zip_filename)},
     )
 
 
