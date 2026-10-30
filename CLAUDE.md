@@ -30,3 +30,19 @@ section before touching gallery-source code.
 `/admin` is password-gated (`ADMIN_USERNAME`/password). Treat changes here
 as auth-adjacent — flag before altering, per the global "needs explicit
 approval" list.
+
+## Worker secrets (Cloudflare)
+Production runs as the `luxsync-v3` Cloudflare Worker (`worker/`). Its secrets
+(`DRIVE_API_KEY`, `ADMIN_USERNAME`, `ADMIN_PASSWORD`, `IP_HASH_SALT`) live only
+in Cloudflare, and are NOT in `wrangler.jsonc` or this repo. The master copy is
+`secrets/luxsync-worker-admin.txt` in this repo (git-ignored via `secrets/`)
+(not in git; agents are denied read access, so never print or paste its values).
+
+- Any deploy that replaces the Worker script (an assets-only upload, a deploy
+  from another folder, a rename) wipes them, and the symptoms are: `/api/*`
+  returns "Server is missing DRIVE_API_KEY" (or empty 404s), and `/admin` returns 404.
+- Restore, run by Julian from `worker/`:
+  `npx wrangler secret bulk ../secrets/luxsync-worker-admin.txt`
+- Always deploy with `cd worker && npm run deploy -- --keep-vars` so dashboard
+  variables survive. Never deploy this Worker name from any other folder.
+- After a redeploy or restore, check: gallery loads, one download works, `/admin` asks for a login.
