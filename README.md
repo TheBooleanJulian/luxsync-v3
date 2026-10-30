@@ -216,6 +216,7 @@ Config & testing
 - No test files found — even a minimal smoke test for the cache and rate-limit logic would help catch regressions
 - No CI pipeline (lint/test on push) — worth adding now that there's a `main` branch deploy trigger
 - Dropbox provider needs testing against a live app + shared folder — implemented from documented API shapes but unverified end-to-end
+- **Dropbox on the Cloudflare Worker is pending (parked 2026-10-30).** The Worker is live with Drive only. To enable Dropbox, set `DROPBOX_APP_KEY`, `DROPBOX_APP_SECRET` and `DROPBOX_REFRESH_TOKEN` as Worker secrets (copy from the suspended Zeabur service if they exist there, otherwise create via the OAuth flow in [Dropbox setup](#dropbox-setup)), then test end-to-end against a real shared folder. Until then Dropbox links fail with a "not configured" error.
 
 Gallery features
 
