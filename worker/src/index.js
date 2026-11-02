@@ -73,7 +73,8 @@ async function getGallery(request, env) {
 
   const key = `${providerName}/folder-cache/${sourceId}.json`;
   const ttl = Number(env.FOLDER_CACHE_TTL_SECONDS || 600);
-  const cached = await cache.getJson(env, key, ttl);
+  // payload.refresh skips the cached listing (e.g. Drive was still syncing)
+  const cached = payload.refresh ? null : await cache.getJson(env, key, ttl);
   if (cached) return json({ provider: providerName, source: sourceId, ...cached });
 
   const result = await provider.listGallery(env, sourceId);
