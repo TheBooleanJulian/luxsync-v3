@@ -103,6 +103,7 @@ class GalleryRequest(BaseModel):
     url: str | None = None
     provider: str | None = None
     source: str | None = None
+    refresh: bool = False  # skip the cached listing (e.g. Drive was still syncing)
 
 
 @app.post("/api/gallery")
@@ -120,7 +121,7 @@ async def get_gallery(request: Request, payload: GalleryRequest):
     provider.validate_ref(source_id)
 
     cache_key = f"{provider_name}/folder-cache/{source_id}.json"
-    cached = cache.get_json(cache_key, FOLDER_CACHE_TTL)
+    cached = None if payload.refresh else cache.get_json(cache_key, FOLDER_CACHE_TTL)
     if cached is not None:
         return {"provider": provider_name, "source": source_id, **cached}
 
