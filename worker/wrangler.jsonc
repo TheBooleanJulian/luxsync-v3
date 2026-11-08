@@ -6,6 +6,10 @@
   "main": "src/index.js",
   "compatibility_date": "2026-10-01",
 
+  // ./public is generated (git-ignored), so every deploy, including Workers Builds on push to
+  // main (root directory: worker), copies index.html + static/ in first.
+  "build": { "command": "node scripts/sync-assets.mjs" },
+
   // Zips are built in-Worker (CRC32 over every photo), so they need more CPU
   // than the default. Requires the Workers Paid plan (the free plan caps CPU at 10 ms).
   "limits": { "cpu_ms": 300000 },
