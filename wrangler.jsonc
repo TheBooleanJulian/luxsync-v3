@@ -1,0 +1,17 @@
+{
+  // GUARD — not the real config. The luxsync-v3 Worker is configured in
+  // worker/wrangler.jsonc and must be deployed from worker/ (Workers Builds
+  // root directory: worker; locally: cd worker && npm run deploy -- --keep-vars).
+  //
+  // Without this file, `wrangler deploy` run in the repo root falls back to
+  // publishing the whole repo as static files with no Worker: /api/* breaks,
+  // /admin is unprotected, source files are public, and the new version has
+  // no secrets, so the next real deploy inherits none (happened 2026-11-08).
+  // The build command below aborts that deploy before anything is uploaded.
+  "name": "luxsync-v3",
+  "compatibility_date": "2026-10-01",
+  "main": "worker/src/index.js",
+  "build": {
+    "command": "node -e \"console.error('Refusing to deploy luxsync-v3 from the repo root. Deploy from worker/ (Workers Builds root directory: worker).'); process.exit(1)\""
+  }
+}
