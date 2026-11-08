@@ -45,4 +45,13 @@ in Cloudflare, and are NOT in `wrangler.jsonc` or this repo. The master copy is
   `npx wrangler secret bulk ../secrets/luxsync-worker-admin.txt`
 - Always deploy with `cd worker && npm run deploy -- --keep-vars` so dashboard
   variables survive. Never deploy this Worker name from any other folder.
+- Workers Builds deploys `main` on push with **root directory `worker`** and a blank
+  build command (`worker/wrangler.jsonc` runs the asset sync). The root-level
+  `wrangler.jsonc` is a guard that fails any deploy run from the repo root; don't
+  delete it or turn it into a real config.
+- A new version inherits secrets from the latest *uploaded* version, not the
+  deployed one. A rollback alone therefore doesn't fix lost secrets. Restore with
+  `npx wrangler versions secret bulk ../secrets/luxsync-worker-admin.txt`, then
+  `npx wrangler versions deploy <new-version-id>@100%`, before anything else is
+  pushed to `main`.
 - After a redeploy or restore, check: gallery loads, one download works, `/admin` asks for a login.
