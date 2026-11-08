@@ -457,6 +457,7 @@
     <div class="meta-row" id="metaRow" style="display:none;">
       <span class="mono" id="photoCount">— frames</span>
       <button class="btn" id="downloadSelectedBtn" disabled>Download Selected</button>
+      <button class="btn" id="refreshBtn" title="Re-check the folder for new photos">Refresh</button>
       <button class="btn" id="shareBtn">Share</button>
       <button class="btn primary" id="downloadAllBtn">Download All</button>
     </div>
@@ -621,6 +622,7 @@
     photoCount: document.getElementById('photoCount'),
     downloadSelectedBtn: document.getElementById('downloadSelectedBtn'),
     shareBtn: document.getElementById('shareBtn'),
+    refreshBtn: document.getElementById('refreshBtn'),
     downloadAllBtn: document.getElementById('downloadAllBtn'),
     galleryHead: document.getElementById('galleryHead'),
     galleryTitle: document.getElementById('galleryTitle'),
@@ -1454,6 +1456,30 @@
     } finally {
       submitBtn.disabled = false;
       submitBtn.textContent = 'Open Gallery';
+    }
+  });
+
+  els.refreshBtn.addEventListener('click', async ()=>{
+    if(!currentSourceId) return;
+    const original = els.refreshBtn.textContent;
+    els.refreshBtn.disabled = true;
+    els.refreshBtn.textContent = 'Checking…';
+    try {
+      const data = await fetchGallery({ provider: currentProvider, source: currentSourceId, refresh: true });
+      const before = photos.length;
+      photos = sortPhotos(buildPhotoObjects(data.files, currentProvider), currentSort);
+      els.photoCount.innerHTML = `<b>${photos.length}</b> frames`;
+      els.downloadAllBtn.disabled = photos.length === 0;
+      selectedIds = new Set();
+      lastSelectedIndex = null;
+      updateSelectionUI();
+      renderGrid();
+      els.refreshBtn.textContent = photos.length === before ? 'No new photos' : `+${photos.length - before} photos`;
+    } catch(err){
+      els.refreshBtn.textContent = 'Failed';
+    } finally {
+      els.refreshBtn.disabled = false;
+      setTimeout(()=>{ els.refreshBtn.textContent = original; }, 2200);
     }
   });
 
