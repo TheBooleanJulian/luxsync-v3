@@ -120,14 +120,19 @@ async function fetchPublicImage(fileRef, size) {
     let res;
     for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
       res = await fetch(url, { redirect: "follow" });
-      if (res.status === 200) {
-        return { bytes: await res.arrayBuffer(), contentType: res.headers.get("content-type") || "image/jpeg" };
+      const type = res.headers.get("content-type") || "";
+      // A throttled request can come back 200 with an HTML "sorry" page;
+      // only image bytes count as success (and only those get cached in R2).
+      if (res.status === 200 && type.startsWith("image/")) {
+        return { bytes: await res.arrayBuffer(), contentType: type };
       }
-      console.warn(`Drive thumbnail ${fileRef} -> ${res.status} (attempt ${attempt + 1})`);
-      if (!isTransient(res.status, "") || attempt === MAX_ATTEMPTS - 1) break;
+      console.warn(`Drive thumbnail ${fileRef} -> ${res.status} ${type} (attempt ${attempt + 1})`);
+      // This unauthenticated endpoint answers bursts with 403 as well as 429.
+      const transient = res.status === 200 || res.status === 403 || isTransient(res.status, "");
+      if (!transient || attempt === MAX_ATTEMPTS - 1) break;
       await backoff(attempt, res);
     }
-    if (res.status === 429 || res.status >= 500) {
+    if (res.status === 200 || res.status === 403 || res.status === 429 || res.status >= 500) {
       throw new LuxError(503, "LS-DRV-RATE", `thumbnail ${fileRef} status=${res.status}`);
     }
     throw new LuxError(404, "LS-DRV-GONE", `thumbnail ${fileRef} status=${res.status}`);
