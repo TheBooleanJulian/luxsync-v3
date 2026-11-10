@@ -821,6 +821,16 @@
           placeholder.style.aspectRatio = `1 / ${p.aspect}`;
           media.replaceWith(placeholder);
         };
+      } else {
+        // Drive throttles bursts of thumbnail requests (a 60-photo grid is one
+        // burst) and lags on freshly uploaded files, so a failed thumb usually
+        // loads a few seconds later. Retry with backoff instead of staying broken.
+        let tries = 0;
+        media.onerror = ()=>{
+          if(tries >= 4) return;
+          const n = ++tries;
+          setTimeout(()=>{ media.src = `${p.thumb}?retry=${n}`; }, 1500 * 2 ** (n-1) + Math.random()*1000);
+        };
       }
 
       const tag = document.createElement('div');
