@@ -20,6 +20,16 @@
 
 LuxSync v3 lets photographers hand a client a single link — the client pastes their shared Google Drive or Dropbox folder URL into the gallery, and immediately gets a fully styled, scrollable masonry grid with lightbox preview, sort controls, multi-select, and bulk zip download. Every source's API credentials live server-side only; the browser never talks to Drive or Dropbox directly. Thumbnails and full images are cached permanently in S3-compatible object storage (Backblaze B2 or Cloudflare R2), and when a Cloudflare-proxied CDN URL is configured, repeat image requests bypass the server entirely — egress from B2 is free under the Bandwidth Alliance.
 
+## Version history
+
+| | Stack | Data | Outcome |
+|---|---|---|---|
+| **v1** (Jan 2026) | Next.js, Backblaze B2, Supabase | Photos re-uploaded through an admin panel into B2; metadata in Supabase | Archived: heavy upload workflow (size caps, sync debugging) and two backing services to maintain |
+| **v2** (Mar 2026) | React + Vite, `@dnd-kit` | Sample data in browser `localStorage`, no backend | Archived 2026-10-26: a portfolio demo that never connected to real client photos |
+| **v3** (this repo) | FastAPI, now also a Cloudflare Worker | Photos stay in the client's Drive/Dropbox; v3 only caches them | Current |
+
+The reasons for v1 are inferred from its commit history; none were recorded at the time.
+
 ## Features
 
 - **Multi-provider gallery sources** — paste a public Google Drive folder or Dropbox shared-folder link; the backend detects which one and dispatches to the matching provider (see [Adding a provider](#adding-a-provider) to add more)
