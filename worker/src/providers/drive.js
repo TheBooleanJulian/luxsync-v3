@@ -56,15 +56,16 @@ async function listChildren(env, parentId) {
  * or in any subfolder (galleries are often per-person subfolders). */
 async function collectMedia(env, rootId) {
   const media = [];
-  const queue = [rootId];
+  // Each entry carries `path`: subfolder names from the root down to it (folder view).
+  const queue = [{ id: rootId, path: [] }];
   let visited = 0;
   while (queue.length && visited < MAX_FOLDERS) {
-    const folderId = queue.shift();
+    const { id, path } = queue.shift();
     visited++;
-    for (const child of await listChildren(env, folderId)) {
+    for (const child of await listChildren(env, id)) {
       const mime = child.mimeType || "";
-      if (mime === FOLDER_MIME) queue.push(child.id);
-      else if (mime.startsWith("image/") || mime.startsWith("video/")) media.push(child);
+      if (mime === FOLDER_MIME) queue.push({ id: child.id, path: [...path, child.name || "Untitled"] });
+      else if (mime.startsWith("image/") || mime.startsWith("video/")) media.push({ ...child, folder: path });
     }
   }
   return media;

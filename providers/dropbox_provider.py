@@ -153,6 +153,14 @@ def _to_exif_time(iso_time: str | None) -> str | None:
     return iso_time.replace("-", ":", 2).rstrip("Z").replace("T", " ")
 
 
+def _folder_of(entry: dict) -> list[str]:
+    """Subfolder names from the shared folder's root down to this file.
+    Paths in a shared-link listing are relative to the link's root;
+    path_display keeps the original casing when Dropbox provides it."""
+    path = entry.get("path_display") or entry.get("path_lower") or ""
+    return [p for p in path.split("/")[:-1] if p]
+
+
 async def list_gallery(source_id: str) -> dict:
     shared_url = _decode(source_id)
 
@@ -184,6 +192,7 @@ async def list_gallery(source_id: str) -> dict:
             "createdTime": entry.get("client_modified"),
             "modifiedTime": entry.get("server_modified"),
             "mimeType": "video/*" if is_video else "image/*",
+            "folder": _folder_of(entry),
             "imageMediaMetadata": {
                 "width": dims.get("width"),
                 "height": dims.get("height"),

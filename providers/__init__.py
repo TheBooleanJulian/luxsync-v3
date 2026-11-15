@@ -16,7 +16,9 @@ interchangeably:
         Return {"name": str, "files": [...]}. Each file dict must include an
         "id" field (an opaque, provider-generated ref used for thumb/full/
         download calls) plus "name", "createdTime", "modifiedTime",
-        "mimeType", and an EXIF-shaped "imageMediaMetadata" dict (or None).
+        "mimeType", an EXIF-shaped "imageMediaMetadata" dict (or None), and
+        "folder": the list of subfolder names from the gallery root down to
+        the file ([] for files directly in the root) — drives folder view.
         Video files are included too — "mimeType" starting with "video/"
         tells the frontend to show a play-icon overlay on the thumbnail and
         route clicks to download instead of the lightbox.
