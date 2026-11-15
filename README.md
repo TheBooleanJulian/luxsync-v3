@@ -6,7 +6,7 @@
 
 **A premium, dependency-free photo gallery that turns any public Google Drive or Dropbox folder into a scrollable, previewable, downloadable client gallery.**
 
-![Version](https://img.shields.io/badge/version-0.11.0-00D4C8)
+![Version](https://img.shields.io/badge/version-0.12.0-00D4C8)
 ![Python](https://img.shields.io/badge/-Python-3776AB?logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/-FastAPI-009688?logo=fastapi&logoColor=white)
 ![Zeabur](https://img.shields.io/badge/-Zeabur-6C5CE7)
@@ -34,6 +34,7 @@ The reasons for v1 are inferred from its commit history; none were recorded at t
 
 - **Multi-provider gallery sources** — paste a public Google Drive folder or Dropbox shared-folder link; the backend detects which one and dispatches to the matching provider (see [Adding a provider](#adding-a-provider) to add more)
 - **Recursive subfolder support** — a gallery folder organized into per-person or per-shoot subfolders (with no images directly inside it) still populates correctly; both providers walk the full folder tree
+- **Folder view** — when a gallery has subfolders, a "Folder View" toggle lets visitors browse them: folder tiles (cover photo, name, frame and subfolder counts) above the photos in the open folder, with a breadcrumb to go back up. The flat grid stays the default, and its lightbox shows each frame's subfolder. Selections carry across folders; Download All is always the whole gallery; Share keeps the open folder (`view=folders&path=…`)
 - **Server-side API credentials** — the browser calls FastAPI endpoints; Drive/Dropbox credentials never reach the client
 - **Folder metadata + file list caching** — source API quota is spent once per folder per TTL window (default 10 min), cache hits cost zero quota
 - **Permanent image cache in S3-compatible storage** — thumbnails and full images are fetched from the source once and stored; every subsequent request hits the cache
@@ -271,6 +272,8 @@ lists the failed files, and a `_MISSING_FILES.txt` inside the zip names them wit
 ## Changelog
 
 Summarised from commit history, most recent first. Versions follow `0.MINOR.PATCH` — MINOR for new features/architecture changes, PATCH for fixes.
+
+- **v0.12.0 — 2026-11-16 (folder view)** — New Folder View mode for galleries with subfolders (see Features). Every provider now returns a `folder` list per file (subfolder names from the gallery root), in both the Worker and the Python app; cached listings without it show as root-level until the folder cache expires. The header logo now links to the LuxSync home page.
 
 - **v0.11.0 — 2026-10-26 (error codes + prominent progress)** — Failed downloads now show an error box (`LS-...` code, message, server-logged reference, "Copy details") that clients can screenshot; see "Download error codes". The "Now downloading" panel leads with a large percentage, a thick progress bar, "File N of M", elapsed time and an ETA, so big batches never look hung (long file lists collapse behind a toggle; the tab title shows progress). A photo that can't be fetched no longer aborts the whole zip (which produced "invalid" zips): it is skipped, reported, and listed in `_MISSING_FILES.txt` inside the zip. New `errors.py`; progress endpoint now returns per-file failures.
 - **v0.10.1 — 2026-10-26 (Drive throttling)** — Clients hit "quota" errors on large downloads even though Drive's documented quota (325k units/user/min, 200 per download) was nowhere near. Cause: every visitor shares one API key and server IP, so a 300-photo zip looked like one heavy user bursting ~300 requests, and v0.10.0's retries stacked (stream_download x _fetch_bytes = up to 9 requests per throttled file) and treated every 403 as "missing file". Now: Drive request starts are paced globally (`DRIVE_MIN_INTERVAL_MS`, default 120), only transient errors are retried (429/5xx/rate-limit 403s, honouring `Retry-After`, with jitter, max 3 requests per file, single retry layer), a per-file `downloadQuotaExceeded` gets a clear message instead of retries, genuine 404/403-forbidden fail immediately, thumbnail fetches are capped at 10 concurrent with the same retry rules, and Google's real error reason is now logged (`luxsync.drive`) so throttling can be diagnosed from Zeabur logs.

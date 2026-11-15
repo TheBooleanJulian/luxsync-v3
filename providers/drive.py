@@ -87,15 +87,17 @@ async def _collect_media(root_id: str) -> list[dict]:
     organized as an event folder full of per-person/per-shoot subfolders
     with no media of their own)."""
     media = []
-    queue = [root_id]
+    # (folder id, subfolder names from the root down to it)
+    queue = [(root_id, [])]
     visited = 0
     while queue and visited < MAX_FOLDERS:
-        folder_id = queue.pop(0)
+        folder_id, path = queue.pop(0)
         visited += 1
         for child in await _list_children(folder_id):
             if child.get("mimeType") == FOLDER_MIME:
-                queue.append(child["id"])
+                queue.append((child["id"], path + [child.get("name") or "Untitled"]))
             elif (child.get("mimeType") or "").startswith(("image/", "video/")):
+                child["folder"] = path
                 media.append(child)
     return media
 
