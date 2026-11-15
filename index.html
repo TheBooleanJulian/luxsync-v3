@@ -167,6 +167,38 @@
   .sort-select:hover, .sort-select:focus{border-color:var(--teal); color:var(--teal); outline:none;}
   .sort-select option{background:var(--panel); color:var(--ink);}
 
+  /* ---------- folder view ---------- */
+  .folder-nav{margin-bottom:26px;}
+  .crumbs{
+    display:flex; align-items:center; flex-wrap:wrap; gap:6px;
+    font-family:'JetBrains Mono',monospace; font-size:12px; letter-spacing:0.04em;
+    color:var(--ink-faint); margin-bottom:18px;
+  }
+  .crumbs button{
+    background:none; border:none; padding:2px 0; cursor:pointer;
+    font:inherit; color:var(--ink-dim); text-decoration:underline; text-underline-offset:3px;
+  }
+  .crumbs button:hover{color:var(--teal);}
+  .crumbs .here{color:var(--ink);}
+  .folders{display:grid; grid-template-columns:repeat(auto-fill, minmax(170px, 1fr)); gap:14px;}
+  @media(max-width:480px){ .folders{grid-template-columns:repeat(2, minmax(0, 1fr)); gap:10px;} }
+  .folder-tile{
+    display:block; width:100%; text-align:left; cursor:pointer; padding:0;
+    background:var(--panel); border:1px solid var(--line); border-radius:2px;
+    color:var(--ink); font:inherit; overflow:hidden;
+    transition:border-color 0.2s ease;
+  }
+  .folder-tile:hover, .folder-tile:focus-visible{border-color:var(--teal); outline:none;}
+  .folder-cover{aspect-ratio:4 / 3; background:var(--panel-raised); overflow:hidden; display:flex; align-items:center; justify-content:center;}
+  .folder-cover img{width:100%; height:100%; object-fit:cover; display:block; transition:transform 0.5s cubic-bezier(.2,.8,.2,1);}
+  .folder-tile:hover .folder-cover img{transform:scale(1.035);}
+  .folder-cover svg{width:34px; height:34px; stroke:var(--ink-faint);}
+  .folder-info{padding:11px 12px 12px; display:flex; gap:9px; align-items:flex-start;}
+  .folder-info svg{width:16px; height:16px; stroke:var(--teal); flex-shrink:0; margin-top:2px;}
+  .folder-name{font-size:14px; font-weight:500; line-height:1.35; word-break:break-word;}
+  .folder-count{font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--ink-faint); letter-spacing:0.04em; margin-top:3px;}
+  .folder-count b{color:var(--gold); font-weight:600;}
+
   .grid{
     position:relative;
   }
@@ -490,7 +522,8 @@
         <div class="eyebrow" id="galleryEyebrow">Contact Sheet</div>
         <h2 id="galleryTitle">Gallery</h2>
       </div>
-      <div style="display:flex; align-items:center; gap:10px;">
+      <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+        <button class="btn" id="viewToggleBtn" style="display:none;" title="Browse the gallery by subfolder">Folder View</button>
         <button class="btn" id="colsToggleBtn">View 5 Columns</button>
         <select class="sort-select" id="sortSelect">
           <option value="date-asc">Date taken (oldest first)</option>
@@ -504,6 +537,11 @@
     </div>
     <div class="mono" style="font-size:11.5px; color:var(--ink-faint); letter-spacing:0.04em; margin-top:14px;">Hover over a photo and click the circle in the top-right corner to select it for a zipped download. Hold Shift and click a second photo to select everything in between.</div>
   </section>
+
+  <nav class="folder-nav" id="folderNav" aria-label="Folders" style="display:none;">
+    <div class="crumbs" id="crumbs"></div>
+    <div class="folders" id="folders"></div>
+  </nav>
 
   <div class="grid" id="grid" style="display:none;"></div>
   <div class="empty-state" id="emptyState" style="display:none;">
@@ -602,7 +640,11 @@
   const VIDEO_BADGE_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polygon points="10 8 16 12 10 16" fill="currentColor" stroke="none"/></svg>';
 
   // ---------- state ----------
-  let photos = [];        // { id, name, thumb, full, downloadUrl, takenAt, modifiedAt }
+  let allPhotos = [];     // every file in the gallery, sorted: { id, name, folder, thumb, full, downloadUrl, takenAt, modifiedAt }
+  let photos = [];        // what the grid/lightbox currently shows: allPhotos, or one folder's files in folder view
+  let viewMode = 'grid';  // 'grid' (everything, flat) | 'folders' (browse subfolders)
+  let currentPath = [];   // folder view: subfolder names from the gallery root
+  let pendingView = null; // { mode, path } from a share link
   let currentIndex = -1;
   let currentSort = 'date-asc';
   let currentProvider = 'drive';
@@ -629,6 +671,10 @@
     galleryTitle: document.getElementById('galleryTitle'),
     sortSelect: document.getElementById('sortSelect'),
     colsToggleBtn: document.getElementById('colsToggleBtn'),
+    viewToggleBtn: document.getElementById('viewToggleBtn'),
+    folderNav: document.getElementById('folderNav'),
+    crumbs: document.getElementById('crumbs'),
+    folders: document.getElementById('folders'),
     grid: document.getElementById('grid'),
     emptyState: document.getElementById('emptyState'),
     lightbox: document.getElementById('lightbox'),
@@ -700,6 +746,9 @@
       return {
         id: f.id,
         name: f.name,
+        // Subfolder names from the gallery root; [] when the file sits in the
+        // root (or the listing predates folder support, e.g. a cached one).
+        folder: Array.isArray(f.folder) ? f.folder : [],
         isVideo,
         // Both Drive's and Dropbox's thumbnail APIs generate a frame
         // thumbnail for video files too, so this is fetched the same way
@@ -791,11 +840,148 @@
     });
   }, { threshold: 0.05, rootMargin: '80px' });
 
+  // ---------- folder view ----------
+  const FOLDER_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>';
+  const byName = (a, b)=> a.localeCompare(b, undefined, {numeric:true, sensitivity:'base'});
+
+  // Folder tree from the flat, already-sorted list, so each folder's files
+  // keep the current sort order. node = { name, children: Map, files, total }
+  function buildTree(list){
+    const newNode = (name)=> ({ name, children: new Map(), files: [], total: 0 });
+    const root = newNode(currentGalleryName);
+    for(const p of list){
+      let node = root;
+      node.total++;
+      for(const seg of p.folder){
+        if(!node.children.has(seg)) node.children.set(seg, newNode(seg));
+        node = node.children.get(seg);
+        node.total++;
+      }
+      node.files.push(p);
+    }
+    return root;
+  }
+
+  function nodeAt(tree, path){
+    let node = tree;
+    for(const seg of path){
+      node = node.children.get(seg);
+      if(!node) return null;
+    }
+    return node;
+  }
+
+  // Cover = first photo found in the folder, searching subfolders if needed
+  // (videos only as a last resort, since their thumbnail may not exist).
+  function coverOf(node){
+    const stack = [node];
+    let fallback = null;
+    while(stack.length){
+      const n = stack.shift();
+      for(const p of n.files){
+        if(!p.isVideo) return p;
+        fallback = fallback || p;
+      }
+      stack.push(...[...n.children.values()].sort((a,b)=> byName(a.name, b.name)));
+    }
+    return fallback;
+  }
+
+  function openFolder(path){
+    currentPath = path;
+    applyView();
+    // Bring the breadcrumb back into view (below the sticky header) if scrolled past it.
+    const y = els.folderNav.getBoundingClientRect().top + window.scrollY - document.querySelector('header.top').offsetHeight - 16;
+    if(window.scrollY > y) window.scrollTo({ top: y, behavior: 'smooth' });
+  }
+
+  function renderFolderNav(tree, node){
+    els.crumbs.innerHTML = '';
+    const trail = [{ name: 'All folders', path: [] }];
+    currentPath.forEach((seg, i)=> trail.push({ name: seg, path: currentPath.slice(0, i + 1) }));
+    trail.forEach((c, i)=>{
+      if(i > 0) els.crumbs.appendChild(Object.assign(document.createElement('span'), { textContent: '/' }));
+      if(i === trail.length - 1){
+        els.crumbs.appendChild(Object.assign(document.createElement('span'), { className: 'here', textContent: c.name }));
+      } else {
+        const b = Object.assign(document.createElement('button'), { type: 'button', textContent: c.name });
+        b.addEventListener('click', ()=> openFolder(c.path));
+        els.crumbs.appendChild(b);
+      }
+    });
+
+    els.folders.innerHTML = '';
+    const children = [...node.children.values()].sort((a,b)=> byName(a.name, b.name));
+    els.folders.style.display = children.length ? '' : 'none';
+    for(const child of children){
+      const tile = document.createElement('button');
+      tile.type = 'button';
+      tile.className = 'folder-tile';
+      tile.title = child.name;
+
+      const cover = document.createElement('div');
+      cover.className = 'folder-cover';
+      const c = coverOf(child);
+      if(c){
+        const img = Object.assign(document.createElement('img'), { loading: 'lazy', src: c.thumb, alt: '' });
+        let tries = 0; // same retry as the grid: Drive throttles thumbnail bursts
+        img.onerror = ()=>{
+          if(tries >= 4){ cover.innerHTML = FOLDER_SVG; return; }
+          const n = ++tries;
+          setTimeout(()=>{ img.src = `${c.thumb}?retry=${n}`; }, 1500 * 2 ** (n-1) + Math.random()*1000);
+        };
+        cover.appendChild(img);
+      } else {
+        cover.innerHTML = FOLDER_SVG;
+      }
+
+      const info = document.createElement('div');
+      info.className = 'folder-info';
+      info.innerHTML = FOLDER_SVG;
+      const text = document.createElement('div');
+      text.appendChild(Object.assign(document.createElement('div'), { className: 'folder-name', textContent: child.name }));
+      const count = document.createElement('div');
+      count.className = 'folder-count';
+      const subs = child.children.size;
+      count.innerHTML = `<b>${child.total}</b> frames` + (subs ? ` · ${subs} folder${subs === 1 ? '' : 's'}` : '');
+      text.appendChild(count);
+      info.appendChild(text);
+
+      tile.appendChild(cover);
+      tile.appendChild(info);
+      tile.addEventListener('click', ()=> openFolder([...currentPath, child.name]));
+      els.folders.appendChild(tile);
+    }
+    els.folderNav.style.display = 'block';
+  }
+
+  // Decide what the grid shows (all files, or one folder's) and re-render.
+  function applyView(){
+    const hasFolders = allPhotos.some(p=> p.folder.length);
+    els.viewToggleBtn.style.display = hasFolders ? '' : 'none';
+    if(!hasFolders) viewMode = 'grid';
+    if(viewMode === 'folders'){
+      const tree = buildTree(allPhotos);
+      let node = nodeAt(tree, currentPath);
+      if(!node){ currentPath = []; node = tree; } // folder vanished on refresh
+      photos = node.files;
+      renderFolderNav(tree, node);
+    } else {
+      photos = allPhotos;
+      els.folderNav.style.display = 'none';
+    }
+    els.viewToggleBtn.textContent = viewMode === 'folders' ? 'Grid View' : 'Folder View';
+    lastSelectedIndex = null;
+    renderGrid();
+  }
+
   function renderGrid(){
     els.grid.innerHTML = '';
     if(photos.length === 0){
       els.grid.style.display = 'none';
-      els.emptyState.style.display = 'block';
+      relayout = null;
+      // In folder view an empty root just means everything is in subfolders.
+      els.emptyState.style.display = (viewMode === 'folders' && allPhotos.length) ? 'none' : 'block';
       return;
     }
     els.emptyState.style.display = 'none';
@@ -1300,7 +1486,8 @@
   }
 
   function downloadSelected(){
-    const selected = photos.filter(p=> selectedIds.has(p.id));
+    // allPhotos: a selection can span several folders in folder view.
+    const selected = allPhotos.filter(p=> selectedIds.has(p.id));
     if(selected.length === 0) return;
     if(selected.length === 1) triggerDownload(selected[0]);
     else requireEmail((v)=> downloadAsZip(selected, v, 'selected', 0, selected.length));
@@ -1308,8 +1495,9 @@
 
   const MAX_ZIP_FILES = 200;
 
+  // Download All is always the whole gallery, whichever folder is open.
   function downloadAll(){
-    if(photos.length === 0) return;
+    if(allPhotos.length === 0) return;
     requireEmail(runDownloadAll);
   }
 
@@ -1317,14 +1505,14 @@
     els.downloadAllBtn.disabled = true;
     const original = els.downloadAllBtn.textContent;
 
-    if(photos.length <= MAX_ZIP_FILES){
+    if(allPhotos.length <= MAX_ZIP_FILES){
       els.downloadAllBtn.textContent = 'Zipping…';
-      downloadAsZip(photos, v, 'all', 0, photos.length);
+      downloadAsZip(allPhotos, v, 'all', 0, allPhotos.length);
     } else {
-      const chunks = Math.ceil(photos.length / MAX_ZIP_FILES);
+      const chunks = Math.ceil(allPhotos.length / MAX_ZIP_FILES);
       for(let i=0;i<chunks;i++){
         els.downloadAllBtn.textContent = `Zipping ${i+1}/${chunks}`;
-        downloadAsZip(photos.slice(i * MAX_ZIP_FILES, (i+1) * MAX_ZIP_FILES), v, 'all', i, photos.length);
+        downloadAsZip(allPhotos.slice(i * MAX_ZIP_FILES, (i+1) * MAX_ZIP_FILES), v, 'all', i, allPhotos.length);
         await new Promise(r=>setTimeout(r, 600));
       }
     }
@@ -1378,7 +1566,8 @@
       tmp.onload = ()=>{ els.lbImg.src = p.full; els.lbImg.classList.add('loaded'); };
       tmp.src = p.full;
     }
-    els.lbFilename.textContent = p.name;
+    // In the flat grid, show which subfolder the frame came from.
+    els.lbFilename.textContent = (viewMode === 'grid' && p.folder.length) ? `${p.folder.join(' / ')} / ${p.name}` : p.name;
     els.lbCounter.innerHTML = `<b>${String(currentIndex+1).padStart(2,'0')}</b> / ${photos.length}`;
     els.lbExif.textContent = p.isVideo ? '' : formatExif(p);
   }
@@ -1393,11 +1582,16 @@
     if(relayout) relayout();
   });
 
+  els.viewToggleBtn.addEventListener('click', ()=>{
+    viewMode = viewMode === 'grid' ? 'folders' : 'grid';
+    currentPath = [];
+    applyView();
+  });
+
   els.sortSelect.addEventListener('change', ()=>{
     currentSort = els.sortSelect.value;
-    photos = sortPhotos(photos, currentSort);
-    lastSelectedIndex = null;
-    renderGrid();
+    allPhotos = sortPhotos(allPhotos, currentSort);
+    applyView();
   });
 
   els.lbPrev.addEventListener('click', ()=> navLightbox(-1));
@@ -1449,19 +1643,23 @@
       currentSort = pendingSort || 'date-asc';
       pendingSort = null;
       els.sortSelect.value = currentSort;
-      photos = sortPhotos(buildPhotoObjects(data.files, currentProvider), currentSort);
+      allPhotos = sortPhotos(buildPhotoObjects(data.files, currentProvider), currentSort);
+      viewMode = (pendingView && pendingView.mode === 'folders') ? 'folders' : 'grid';
+      currentPath = (pendingView && pendingView.path) || [];
+      pendingView = null;
       els.galleryTitle.textContent = data.name || 'Delivered Frames';
-      els.photoCount.innerHTML = `<b>${photos.length}</b> frames`;
+      els.photoCount.innerHTML = `<b>${allPhotos.length}</b> frames`;
       els.metaRow.style.display = 'flex';
-      els.downloadAllBtn.disabled = photos.length === 0;
+      els.downloadAllBtn.disabled = allPhotos.length === 0;
       selectedIds = new Set();
-      lastSelectedIndex = null;
       updateSelectionUI();
-      renderGrid();
+      applyView();
     } catch(err){
       pendingSourceRef = null;
+      pendingView = null;
       els.setup.style.display = 'flex';
       els.galleryHead.style.display = 'none';
+      els.folderNav.style.display = 'none';
       els.grid.style.display = 'none';
       showError('Could not load this gallery — ' + err.message + '. Check the folder is shared publicly.');
     } finally {
@@ -1477,15 +1675,14 @@
     els.refreshBtn.textContent = 'Checking…';
     try {
       const data = await fetchGallery({ provider: currentProvider, source: currentSourceId, refresh: true });
-      const before = photos.length;
-      photos = sortPhotos(buildPhotoObjects(data.files, currentProvider), currentSort);
-      els.photoCount.innerHTML = `<b>${photos.length}</b> frames`;
-      els.downloadAllBtn.disabled = photos.length === 0;
+      const before = allPhotos.length;
+      allPhotos = sortPhotos(buildPhotoObjects(data.files, currentProvider), currentSort);
+      els.photoCount.innerHTML = `<b>${allPhotos.length}</b> frames`;
+      els.downloadAllBtn.disabled = allPhotos.length === 0;
       selectedIds = new Set();
-      lastSelectedIndex = null;
       updateSelectionUI();
-      renderGrid();
-      els.refreshBtn.textContent = photos.length === before ? 'No new photos' : `+${photos.length - before} photos`;
+      applyView(); // stays in the open folder if it still exists
+      els.refreshBtn.textContent = allPhotos.length === before ? 'No new photos' : `+${allPhotos.length - before} photos`;
     } catch(err){
       els.refreshBtn.textContent = 'Failed';
     } finally {
@@ -1501,6 +1698,10 @@
     url.searchParams.set('provider', currentProvider);
     url.searchParams.set('source', currentSourceId);
     url.searchParams.set('sort', currentSort);
+    if(viewMode === 'folders'){
+      url.searchParams.set('view', 'folders');
+      currentPath.forEach(seg=> url.searchParams.append('path', seg)); // repeated: names may contain "/"
+    }
     const shareUrl = url.toString();
     const original = els.shareBtn.textContent;
     try {
@@ -1521,6 +1722,7 @@
     const params = new URLSearchParams(location.search);
     const sortParam = params.get('sort');
     if(sortParam) pendingSort = sortParam;
+    if(params.get('view') === 'folders') pendingView = { mode: 'folders', path: params.getAll('path') };
 
     const providerParam = params.get('provider');
     const sourceParam = params.get('source');

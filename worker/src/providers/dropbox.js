@@ -91,6 +91,12 @@ async function contentFetch(env, path, arg, range) {
 // Dropbox gives "YYYY-MM-DDTHH:MM:SSZ"; match Drive's EXIF-style "YYYY:MM:DD HH:MM:SS" (what the frontend parses).
 const toExifTime = (iso) => (iso ? iso.replace("-", ":").replace("-", ":").replace(/Z$/, "").replace("T", " ") : null);
 
+// Subfolder names from the shared folder's root down to a file (folder view).
+// Shared-link listing paths are relative to the link's root; path_display keeps
+// the original casing when Dropbox provides it.
+export const folderOf = (entry) =>
+  (entry.path_display || entry.path_lower || "").split("/").slice(0, -1).filter(Boolean);
+
 export async function listGallery(env, sourceId) {
   const sharedUrl = b64urlDecode(sourceId);
   const entries = [];
@@ -117,6 +123,7 @@ export async function listGallery(env, sourceId) {
       createdTime: entry.client_modified,
       modifiedTime: entry.server_modified,
       mimeType: video ? "video/*" : "image/*",
+      folder: folderOf(entry),
       imageMediaMetadata: dims ? { width: dims.width, height: dims.height, time: toExifTime(media.time_taken) } : null,
     });
   }
