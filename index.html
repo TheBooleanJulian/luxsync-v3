@@ -80,9 +80,10 @@
     display:flex; align-items:center; justify-content:space-between; gap:20px;
     flex-wrap:wrap;
   }
-  .brand{display:flex; align-items:center; gap:10px;}
+  .brand{display:flex; align-items:center; gap:10px; text-decoration:none; color:inherit;}
   .brand .mark{width:26px; height:26px; display:block;}
-  .brand .name{font-size:15px; color:var(--ink-dim); letter-spacing:0.08em; text-transform:uppercase;}
+  .brand .name{font-size:15px; color:var(--ink-dim); letter-spacing:0.08em; text-transform:uppercase; transition:color 0.15s ease;}
+  .brand:hover .name{color:var(--teal);}
   .meta-row{display:flex; align-items:center; gap:18px; font-size:12px;}
   .meta-row .mono{color:var(--ink-dim); letter-spacing:0.04em;}
   .meta-row .mono b{color:var(--gold); font-weight:600;}
@@ -453,7 +454,7 @@
 
 <header class="top">
   <div class="top-inner">
-    <div class="brand"><img class="mark" src="/static/logo-mark.png" alt="LuxSync"><span class="name">Accurova LuxSync</span></div>
+    <a class="brand" href="https://luxsync-v3.thebooleanjulian.dev/" title="LuxSync home"><img class="mark" src="/static/logo-mark.png" alt="LuxSync"><span class="name">Accurova LuxSync</span></a>
     <div class="meta-row" id="metaRow" style="display:none;">
       <span class="mono" id="photoCount">— frames</span>
       <button class="btn" id="downloadSelectedBtn" disabled>Download Selected</button>
