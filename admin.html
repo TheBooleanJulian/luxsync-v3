@@ -157,10 +157,10 @@ header{display:flex;justify-content:space-between;align-items:center;flex-wrap:w
 header::after{content:"";position:absolute;left:0;right:0;bottom:0;height:1px;background:linear-gradient(90deg,var(--cyan),var(--magenta));}
 .brand{display:flex;align-items:center;gap:var(--space-2);text-decoration:none;color:var(--ink);border-radius:var(--radius-sm);}
 .mark{
-  display:block;width:26px;aspect-ratio:458 / 434;flex-shrink:0;
+  display:block;width:26px;aspect-ratio:466 / 434;flex-shrink:0;
   background:linear-gradient(135deg,var(--cyan),var(--magenta));
-  -webkit-mask:url('/static/logo-mark.png') right center / auto 100% no-repeat;
-          mask:url('/static/logo-mark.png') right center / auto 100% no-repeat;
+  -webkit-mask:url('/static/logo-mark.png') center / contain no-repeat;
+          mask:url('/static/logo-mark.png') center / contain no-repeat;
 }
 h1{font:700 22px/28px var(--font-display);letter-spacing:0.04em;text-transform:uppercase;transition:color var(--dur-fast) var(--ease-out);}
 .brand:hover h1{color:var(--cyan-ink);}
