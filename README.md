@@ -6,7 +6,7 @@
 
 **A premium, dependency-free photo gallery that turns any public Google Drive or Dropbox folder into a scrollable, previewable, downloadable client gallery.**
 
-![Version](https://img.shields.io/badge/version-0.12.0-00D4C8)
+![Version](https://img.shields.io/badge/version-0.13.0-00D4C8)
 ![Python](https://img.shields.io/badge/-Python-3776AB?logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/-FastAPI-009688?logo=fastapi&logoColor=white)
 ![Zeabur](https://img.shields.io/badge/-Zeabur-6C5CE7)
@@ -49,6 +49,7 @@ The reasons for v1 are inferred from its commit history; none were recorded at t
 - **Shareable gallery links** — provider + source id encoded in the URL so a gallery view is directly linkable (old Drive-only `?folder=` links still work)
 - **Email-gated downloads + admin dashboard** — visitors enter an email once (remembered per browser) before any download; every download is logged to SQLite and viewable at `/admin` (see [Download tracking](#download-tracking))
 - **No build step** — FastAPI backend + single self-contained HTML files (`index.html`, `admin.html`)
+- **Julian Unified UI** — both pages follow the fleet design system (`thebooleanjulian-branding/julian-unified-ui-design-system.md`): tokens copied inline from `dist/tokens.css`, dark by default with a light mode that follows the OS setting and remembers the visitor's choice (`luxsync_theme` in localStorage)
 - **Video files in the gallery** — both providers list video files alongside photos, with a thumbnail (Drive's and Dropbox's thumbnail APIs both generate a frame from video files, no ffmpeg needed) and a play-icon overlay in the grid; clicking one opens the lightbox and plays it inline. Streamed video is cached in S3-compatible storage the same way as images (and served via the CDN redirect when configured), so repeat views don't re-fetch from the source
 
 ## Tech Stack
@@ -273,6 +274,7 @@ lists the failed files, and a `_MISSING_FILES.txt` inside the zip names them wit
 
 Summarised from commit history, most recent first. Versions follow `0.MINOR.PATCH` — MINOR for new features/architecture changes, PATCH for fixes.
 
+- **v0.13.0 — 2026-11-16 (Julian Unified UI)** — Gallery and `/admin` restyled from the legacy teal/gold palette to the Julian Unified UI design system: Chakra Petch / IBM Plex Sans / JetBrains Mono, cyan for actions, magenta for the one "special" element per region, signal-gradient brand mark, header hairline and progress bars, bracketed setup panel. New light mode plus a Light/Dark toggle. The LuxSync logo mark is recoloured in CSS (the PNG is used as a mask), so no image assets changed. The film-strip sprockets, grain overlay and looping toast animation are gone (the system allows no decorative loops). The email gate, download panel and errors keep their behaviour; errors now carry an "x" glyph so they don't rely on colour alone.
 - **v0.12.0 — 2026-11-16 (folder view)** — New Folder View mode for galleries with subfolders (see Features). Every provider now returns a `folder` list per file (subfolder names from the gallery root), in both the Worker and the Python app; cached listings without it show as root-level until the folder cache expires. The header logo now links to the LuxSync home page.
 
 - **v0.11.0 — 2026-10-26 (error codes + prominent progress)** — Failed downloads now show an error box (`LS-...` code, message, server-logged reference, "Copy details") that clients can screenshot; see "Download error codes". The "Now downloading" panel leads with a large percentage, a thick progress bar, "File N of M", elapsed time and an ETA, so big batches never look hung (long file lists collapse behind a toggle; the tab title shows progress). A photo that can't be fetched no longer aborts the whole zip (which produced "invalid" zips): it is skipped, reported, and listed in `_MISSING_FILES.txt` inside the zip. New `errors.py`; progress endpoint now returns per-file failures.
