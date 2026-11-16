@@ -1,16 +1,16 @@
 <div align="center">
 
-![LuxSync](assets/luxsync%20banner%20v3.png)
+![LuxSync](assets/luxsync%20banner%20v4.png)
 
 # LuxSync v3
 
 **A premium, dependency-free photo gallery that turns any public Google Drive or Dropbox folder into a scrollable, previewable, downloadable client gallery.**
 
-![Version](https://img.shields.io/badge/version-0.13.0-00D4C8)
+![Version](https://img.shields.io/badge/version-0.13.1-00E5FF)
 ![Python](https://img.shields.io/badge/-Python-3776AB?logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/-FastAPI-009688?logo=fastapi&logoColor=white)
 ![Zeabur](https://img.shields.io/badge/-Zeabur-6C5CE7)
-![License](https://img.shields.io/badge/license-AGPLv3%20%2B%20Commercial-00D4C8.svg)
+![License](https://img.shields.io/badge/license-AGPLv3%20%2B%20Commercial-00E5FF.svg)
 
 </div>
 
@@ -274,6 +274,7 @@ lists the failed files, and a `_MISSING_FILES.txt` inside the zip names them wit
 
 Summarised from commit history, most recent first. Versions follow `0.MINOR.PATCH` — MINOR for new features/architecture changes, PATCH for fixes.
 
+- **v0.13.1 — 2026-11-16 (Unified UI brand assets)** — Raster assets redone in the Unified UI palette: favicon/logo mark (arrows recoloured with the signal gradient, stray edge line removed), home-screen icon, full logo, link-preview card and README banner (v4; v1–v3 kept). Sources and how to re-render them: `assets/source/`. Image URLs in the page head carry `?v=2` so cached gold previews refresh.
 - **v0.13.0 — 2026-11-16 (Julian Unified UI)** — Gallery and `/admin` restyled from the legacy teal/gold palette to the Julian Unified UI design system: Chakra Petch / IBM Plex Sans / JetBrains Mono, cyan for actions, magenta for the one "special" element per region, signal-gradient brand mark, header hairline and progress bars, bracketed setup panel. New light mode plus a Light/Dark toggle. The LuxSync logo mark is recoloured in CSS (the PNG is used as a mask), so no image assets changed. The film-strip sprockets, grain overlay and looping toast animation are gone (the system allows no decorative loops). The email gate, download panel and errors keep their behaviour; errors now carry an "x" glyph so they don't rely on colour alone.
 - **v0.12.0 — 2026-11-16 (folder view)** — New Folder View mode for galleries with subfolders (see Features). Every provider now returns a `folder` list per file (subfolder names from the gallery root), in both the Worker and the Python app; cached listings without it show as root-level until the folder cache expires. The header logo now links to the LuxSync home page.
 

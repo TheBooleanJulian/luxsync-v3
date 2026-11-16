@@ -1,0 +1,114 @@
+<!doctype html>
+<!--
+  Source for LuxSync's raster brand assets (Julian Unified UI, 2026-11-16).
+  Serve the repo root (python -m http.server 8765) and screenshot each layout at its exact size
+  with headless Edge/Chrome, e.g.:
+    msedge --headless=new --hide-scrollbars --force-device-scale-factor=1 --default-background-color=00000000
+           --window-size=512,512 --virtual-time-budget=6000 --screenshot=icon.png
+           "http://127.0.0.1:8765/assets/source/brand-assets.html?kind=icon"
+  kind=icon   512x512   -> static/apple-touch-icon.png
+  kind=full   719x743   -> static/logo-full.png (transparent)
+  kind=card   1200x600  -> static/social-card.png (bump ?v= in index.html's og/twitter tags)
+  kind=banner 1774x887  -> assets/luxsync banner vN.png (README)
+  static/logo-mark.png (the gradient arrows used here) was made from the original gold mark with recolor_mark.py.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>LuxSync brand assets</title>
+<link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&display=swap" rel="stylesheet">
+<style>
+  /* Julian Unified UI tokens (dark) used by these assets */
+  :root{
+    --bg:#05060d; --line:#262d52; --line-strong:#6370b6; --ink:#e8ecff; --ink-muted:#9ca5d4;
+    --cyan:#00e5ff; --magenta:#ff2bd6; --cyan-ink:#19e6ff; --magenta-ink:#ff6be2;
+    --font-display:"Chakra Petch","Rajdhani",system-ui,sans-serif;
+  }
+  *{margin:0; padding:0; box-sizing:border-box;}
+  html,body{background:transparent; overflow:hidden;}
+  body{font-family:var(--font-display); color:var(--ink);}
+
+  /* L bracket + arrows lockup, 285 x 300 units, scaled with --s */
+  .lockup{position:relative; width:calc(285px * var(--s)); height:calc(300px * var(--s)); flex-shrink:0;}
+  .lockup svg{position:absolute; inset:0; width:100%; height:100%;}
+  .lockup img{position:absolute; left:calc(50px * var(--s)); top:calc(40px * var(--s)); width:calc(235px * var(--s));}
+  .word{font-weight:600; letter-spacing:0.42em; text-transform:uppercase; white-space:nowrap;}
+  .word b{font-weight:600; color:var(--cyan-ink);}
+
+  /* ---- icon: 512 x 512, opaque ---- */
+  .icon{width:512px; height:512px; background:var(--bg); display:flex; flex-direction:column; align-items:center; justify-content:center; gap:34px; --s:1;}
+  .icon .word{font-size:40px; margin-right:-0.42em;}
+
+  /* ---- full logo: 719 x 743, transparent ---- */
+  .full{width:719px; height:743px; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:56px; --s:1.72;}
+  .full .word{font-size:68px; margin-right:-0.42em;}
+
+  /* ---- social card: 1200 x 600 (banner = same, zoomed) ---- */
+  .card{
+    position:relative; width:1200px; height:600px; background:var(--bg); overflow:hidden;
+    display:flex; align-items:center; justify-content:center; gap:56px; padding-bottom:30px;
+  }
+  .card::before{ /* dot grid texture, faded toward the edges */
+    content:""; position:absolute; inset:0;
+    background-image:radial-gradient(var(--line) 1.4px, transparent 1.4px); background-size:24px 24px;
+    -webkit-mask:radial-gradient(ellipse at center, #000 30%, transparent 75%);
+            mask:radial-gradient(ellipse at center, #000 30%, transparent 75%);
+  }
+  .bracket{position:absolute; width:44px; height:44px; border:3px solid var(--cyan-ink);}
+  .bracket.tl{top:32px; left:32px; border-right:0; border-bottom:0;}
+  .bracket.br{bottom:32px; right:32px; border-left:0; border-top:0; border-color:var(--magenta-ink);}
+  .hairline{position:absolute; left:120px; right:120px; bottom:96px; height:2px; background:linear-gradient(90deg,var(--cyan),var(--magenta));}
+  .card > *{position:relative;}
+  .card .hairline, .card .bracket{position:absolute;}
+  .camera{width:150px; height:150px; color:var(--ink);}
+  .divider{width:1px; height:190px; background:var(--line-strong);}
+  .text{display:flex; flex-direction:column; align-items:center; gap:14px;}
+  .accurova{font-size:92px; line-height:1; font-weight:700; letter-spacing:0.06em; margin-right:-0.06em;}
+  .lux{display:flex; align-items:center; gap:22px; font-size:36px;}
+  .lux .word{margin-right:-0.42em;}
+  .lux i{display:block; width:70px; height:2px; background:var(--line-strong);}
+  .tagline{font-size:18px; font-weight:600; letter-spacing:0.32em; color:var(--ink-muted); margin-right:-0.32em;}
+  .tagline b{color:var(--cyan-ink); font-weight:600;}
+  .card .lockup{--s:0.62;}
+  .banner{zoom:calc(1774 / 1200);}
+</style>
+</head>
+<body>
+<template id="lockup">
+  <div class="lockup">
+    <svg viewBox="0 0 285 300" aria-hidden="true"><polygon points="0,0 35,35 35,265 245,265 280,300 0,300" fill="#e8ecff"/></svg>
+    <img src="/static/logo-mark.png" alt="">
+  </div>
+</template>
+<div id="root"></div>
+<script>
+  const kind = new URLSearchParams(location.search).get('kind') || 'icon';
+  const lockup = () => document.getElementById('lockup').content.cloneNode(true);
+  const word = () => Object.assign(document.createElement('div'), { className: 'word', innerHTML: 'Lux<b>Sync</b>' });
+  const root = document.getElementById('root');
+  if (kind === 'icon' || kind === 'full') {
+    const box = Object.assign(document.createElement('div'), { className: kind });
+    box.append(lockup(), word());
+    root.append(box);
+  } else {
+    root.innerHTML = `
+      <div class="card ${kind === 'banner' ? 'banner' : ''}">
+        <span class="bracket tl"></span><span class="bracket br"></span>
+        <svg class="camera" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/>
+        </svg>
+        <div class="divider"></div>
+        <div class="text">
+          <div class="accurova">ACCUROVA</div>
+          <div class="lux"><i></i><div class="word">Lux<b>Sync</b></div><i></i></div>
+          <div class="tagline">ACCURACY. INNOVATION. <b>SYNCED.</b></div>
+        </div>
+        <div class="divider"></div>
+        <div id="lk"></div>
+        <div class="hairline"></div>
+      </div>`;
+    document.getElementById('lk').replaceWith(lockup());
+  }
+</script>
+</body>
+</html>

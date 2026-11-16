@@ -4,11 +4,11 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Accurova LuxSync — Gallery</title>
-<link rel="icon" type="image/png" href="/static/logo-mark.png">
-<link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
+<link rel="icon" type="image/png" href="/static/logo-mark.png?v=2">
+<link rel="apple-touch-icon" href="/static/apple-touch-icon.png?v=2">
 <meta property="og:title" content="Accurova LuxSync">
 <meta property="og:description" content="A premium, dependency-free photo gallery that turns any public Google Drive or Dropbox folder into a scrollable, previewable, downloadable client gallery.">
-<meta property="og:image" content="https://luxsync-v3.thebooleanjulian.dev/static/social-card.png">
+<meta property="og:image" content="https://luxsync-v3.thebooleanjulian.dev/static/social-card.png?v=2">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="600">
 <meta property="og:type" content="website">
@@ -16,7 +16,7 @@
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="Accurova LuxSync">
 <meta name="twitter:description" content="A premium, dependency-free photo gallery that turns any public Google Drive or Dropbox folder into a scrollable, previewable, downloadable client gallery.">
-<meta name="twitter:image" content="https://luxsync-v3.thebooleanjulian.dev/static/social-card.png">
+<meta name="twitter:image" content="https://luxsync-v3.thebooleanjulian.dev/static/social-card.png?v=2">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <script>
@@ -178,13 +178,12 @@ body{
   color:var(--ink-muted); margin-bottom:var(--space-3);
 }
 
-/* Brand mark: the LuxSync arrows, lit with the signal gradient (the logo PNG is the mask).
-   Right-aligned and slightly narrower than the PNG to crop a faint 1px line on its left edge. */
+/* Brand mark: the LuxSync arrows, lit with the signal gradient (the logo PNG is the mask). */
 .mark{
-  display:block; width:26px; aspect-ratio:458 / 434; flex-shrink:0;
+  display:block; width:26px; aspect-ratio:466 / 434; flex-shrink:0;
   background:linear-gradient(135deg, var(--cyan), var(--magenta));
-  -webkit-mask:url('/static/logo-mark.png') right center / auto 100% no-repeat;
-          mask:url('/static/logo-mark.png') right center / auto 100% no-repeat;
+  -webkit-mask:url('/static/logo-mark.png') center / contain no-repeat;
+          mask:url('/static/logo-mark.png') center / contain no-repeat;
 }
 
 /* ---------- header ---------- */
