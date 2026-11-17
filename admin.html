@@ -183,15 +183,31 @@ h1{font:700 22px/28px var(--font-display);letter-spacing:0.04em;text-transform:u
 .tab[aria-selected="true"]{color:var(--cyan-ink);}
 .tab[aria-selected="true"]::after{content:"";position:absolute;left:0;right:0;bottom:-1px;height:2px;background:linear-gradient(90deg,var(--cyan),var(--magenta));}
 .tools{display:flex;gap:var(--space-2);flex-wrap:wrap;}
-input[type="search"]{
+input[type="search"],input[type="url"]{
   height:var(--control-md);width:240px;padding:0 var(--space-3);
   background:var(--surface);border:1px solid var(--line-strong);border-radius:var(--radius-md);color:var(--ink);
   font:400 14px/20px var(--font-sans);outline:none;
   transition:box-shadow var(--dur-fast) var(--ease-out),border-color var(--dur-fast) var(--ease-out);
 }
-input[type="search"]::placeholder{color:var(--ink-faint);}
-input[type="search"]:hover{border-color:var(--cyan-ink);}
-input[type="search"]:focus{border-color:var(--cyan-ink);box-shadow:var(--glow-cyan);}
+input[type="search"]::placeholder,input[type="url"]::placeholder{color:var(--ink-faint);}
+input[type="search"]:hover,input[type="url"]:hover{border-color:var(--cyan-ink);}
+input[type="search"]:focus,input[type="url"]:focus{border-color:var(--cyan-ink);box-shadow:var(--glow-cyan);}
+
+/* ---------- prepare gallery ---------- */
+.panel{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius-lg);padding:var(--space-4);margin-bottom:var(--space-6);}
+.panel p{color:var(--ink-muted);font-size:13px;line-height:18px;margin:var(--space-2) 0 var(--space-3);}
+.prep-row{display:flex;gap:var(--space-2);flex-wrap:wrap;}
+.prep-row input{flex:1;min-width:200px;width:auto;}
+.btn.primary{background:var(--cyan);border-color:var(--cyan);color:var(--on-accent);}
+.btn.primary:hover{background:var(--cyan);color:var(--on-accent);box-shadow:var(--glow-cyan);}
+.progress{height:4px;margin-top:var(--space-4);background:var(--surface-raised);border-radius:var(--radius-pill);overflow:hidden;}
+.progress > div{height:100%;width:0;background:linear-gradient(90deg,var(--cyan),var(--magenta));transition:width var(--dur-base) var(--ease-out);}
+.prep-status{margin-top:var(--space-2);font:500 11.5px/16px var(--font-mono);color:var(--ink-muted);word-break:break-all;}
+.prep-status strong{color:var(--ink);font-weight:500;}
+.prep-status a{color:var(--cyan-ink);}
+.prep-fails{margin-top:var(--space-3);list-style:none;font:500 11.5px/16px var(--font-mono);color:var(--ink-muted);max-height:200px;overflow:auto;}
+.prep-fails li{padding:2px 0;word-break:break-all;}
+.prep-fails .code{color:var(--danger);}
 .btn{
   display:inline-flex;align-items:center;justify-content:center;gap:var(--space-2);
   height:var(--control-md);padding:0 var(--space-4);
@@ -253,6 +269,22 @@ td.mono{font-size:11.5px;line-height:16px;font-weight:500;letter-spacing:0.02em;
   </header>
 
   <div class="err" id="err" hidden></div>
+
+  <section class="panel" aria-labelledby="prepTitle">
+    <div class="eyebrow" id="prepTitle">Prepare gallery</div>
+    <p>Run this after uploading, before you share the link. It copies every thumbnail, preview and original into LuxSync's own storage, so clients never hit Google Drive's download limits. Safe to re-run: files already copied are skipped.</p>
+    <form class="prep-row" id="prepForm">
+      <input type="url" id="prepUrl" required placeholder="Paste the Drive / Dropbox folder link or LuxSync gallery link" aria-label="Gallery link">
+      <button class="btn primary" id="prepBtn" type="submit">Prepare</button>
+      <button class="btn" id="prepRetry" type="button" hidden>Retry failed</button>
+    </form>
+    <div id="prepOut" hidden>
+      <div class="progress"><div id="prepBar"></div></div>
+      <div class="prep-status" id="prepStatus"></div>
+      <ul class="prep-fails" id="prepFails"></ul>
+    </div>
+  </section>
+
   <div class="stats" id="stats"></div>
 
   <div class="bar">
@@ -386,6 +418,132 @@ td.mono{font-size:11.5px;line-height:16px;font-weight:500;letter-spacing:0.02em;
   $('exportBtn').addEventListener('click', ()=>{
     location.href = `/api/admin/export.csv?view=${view === 'emails' ? 'emails' : 'downloads'}`;
   });
+
+  // ---------- prepare gallery: mirror every file into R2, one request per file ----------
+  const OK_PARTS = ['cached', 'copied', 'too-large'];
+  let prep = null;   // { gallery, files, failed: [{file, why}], busy }
+  const mb = (n)=> (n / 1048576).toLocaleString('en-SG', {maximumFractionDigits: 0});
+
+  async function prepareOne(file, onBytes){
+    const res = await fetch('/api/admin/prepare', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({provider: prep.gallery.provider, id: file.id, name: file.name}),
+    });
+    if(!res.ok) throw new Error(`HTTP ${res.status}`);
+    // NDJSON: progress lines while a big file copies, then one {done:true} line.
+    const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
+    let buf = '', final = null;
+    for(;;){
+      const {done, value} = await reader.read();
+      if(done) break;
+      buf += value;
+      let i;
+      while((i = buf.indexOf('\n')) >= 0){
+        const line = buf.slice(0, i); buf = buf.slice(i + 1);
+        if(!line) continue;
+        const msg = JSON.parse(line);
+        if(msg.done) final = msg; else onBytes(msg.bytes, msg.total);
+      }
+    }
+    if(!final) throw new Error('connection closed mid-copy');
+    if(final.error) throw new Error(final.error.message || String(final.error));
+    return final.parts;
+  }
+
+  function prepRender(done, total, current){
+    const g = prep.gallery;
+    $('prepOut').hidden = false;
+    const status = $('prepStatus');
+    status.replaceChildren();
+    if(prep.busy){
+      $('prepBar').style.width = `${total ? (done / total) * 100 : 0}%`;
+      status.append(`Preparing `, el('strong', '', g.name), ` · ${done} / ${total} files`, current ? ` · ${current}` : '');
+    } else {
+      // Totals are for the whole gallery, also after a retry of just the failures.
+      const all = prep.files.length, ok = all - prep.failed.length;
+      $('prepBar').style.width = `${all ? (ok / all) * 100 : 0}%`;
+      status.append(el('strong', '', g.name), ` · ${ok} / ${all} files ready`,
+        prep.failed.length ? ` · ${prep.failed.length} failed, retry in a few minutes` : ' · safe to share ');
+      if(!prep.failed.length){
+        const a = el('a', '', 'Open gallery');
+        a.href = `/?provider=${encodeURIComponent(g.provider)}&source=${encodeURIComponent(g.source)}`;
+        a.target = '_blank'; a.rel = 'noopener';
+        status.append(a);
+      }
+    }
+    const list = $('prepFails');
+    list.replaceChildren();
+    prep.failed.forEach(({file, why})=>{
+      const li = el('li', '', `${file.name} `);
+      li.append(el('span', 'code', why));
+      list.append(li);
+    });
+    $('prepRetry').hidden = prep.busy || !prep.failed.length;
+    $('prepBtn').disabled = prep.busy;
+  }
+
+  async function runPrepare(files){
+    prep.busy = true;
+    prep.failed = [];
+    let next = 0, done = 0;
+    const current = new Map();   // file id -> progress text, for the two in-flight files
+    const show = ()=> prepRender(done, files.length, [...current.values()].join(' · '));
+    // Two at a time: quick enough for photos, gentle on the source's burst limits.
+    async function lane(){
+      while(next < files.length){
+        const file = files[next++];
+        current.set(file.id, file.name);
+        show();
+        let why = '';
+        try {
+          const parts = await prepareOne(file, (bytes, total)=>{
+            current.set(file.id, `${file.name} ${mb(bytes)} / ${mb(total)} MB`);
+            show();
+          });
+          why = Object.entries(parts).filter(([, v])=> !OK_PARTS.includes(v))
+            .map(([part, v])=> `${part}: ${v.code || v}`).join(', ');
+        } catch(e){ why = e.message; }
+        current.delete(file.id);
+        done++;
+        if(why){
+          prep.failed.push({file, why});
+          await new Promise(r=> setTimeout(r, 3000));   // back off after a failure
+        }
+        show();
+      }
+    }
+    await Promise.all([lane(), lane()]);
+    prep.busy = false;
+    show();
+  }
+
+  $('prepForm').addEventListener('submit', async (e)=>{
+    e.preventDefault();
+    if(prep && prep.busy) return;
+    showErr('');
+    const link = $('prepUrl').value.trim();
+    // A LuxSync gallery link carries provider + source; anything else is a folder link.
+    let body = {url: link, refresh: true};
+    try {
+      const u = new URL(link);
+      if(u.searchParams.get('source')) body = {provider: u.searchParams.get('provider') || 'drive', source: u.searchParams.get('source'), refresh: true};
+    } catch(_){}
+    $('prepBtn').disabled = true;
+    try {
+      const res = await fetch('/api/gallery', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+      const data = await res.json().catch(()=> ({}));
+      if(!res.ok) throw new Error(typeof data.detail === 'string' ? data.detail : (data.detail?.message || `HTTP ${res.status}`));
+      prep = {gallery: data, files: data.files, failed: [], busy: false};
+      await runPrepare(prep.files);
+    } catch(err){
+      showErr(`Prepare failed: ${err.message}`);
+      $('prepBtn').disabled = false;
+    }
+  });
+  $('prepRetry').addEventListener('click', ()=>{
+    if(prep && !prep.busy) runPrepare(prep.failed.map(f=> f.file));
+  });
+  window.addEventListener('beforeunload', (e)=>{ if(prep && prep.busy){ e.preventDefault(); e.returnValue = ''; } });
 
   // ---------- theme: follow the OS first, then remember the choice ----------
   function currentTheme(){
