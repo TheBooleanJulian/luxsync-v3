@@ -124,6 +124,17 @@ export function isVideo(name) {
   return (guessType(name) || "").startsWith("video/");
 }
 
+/** The Range header to forward for a resumable download, or null to send the
+ * whole file. Honours If-Range: a resume validated against a different ETag
+ * (or a date, since we never send Last-Modified) restarts from byte 0. */
+export function resumeRange(request, etag) {
+  const range = request.headers.get("Range");
+  if (!range) return null;
+  const ifRange = request.headers.get("If-Range");
+  if (ifRange && ifRange !== etag) return null;
+  return range;
+}
+
 export function clientIp(request) {
   return request.headers.get("CF-Connecting-IP") || "";
 }
