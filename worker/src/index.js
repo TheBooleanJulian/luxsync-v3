@@ -13,7 +13,7 @@ import * as dropbox from "./providers/dropbox.js";
 import { generatorToStream, zipStream } from "./zip.js";
 import {
   HttpError, LuxError, clientIp, contentDisposition, dedupeNames, describe, guessType, isVideo, json,
-  requireAdmin, requireEmail, sanitizeZipName, sleep,
+  requireAdmin, requireEmail, resumeRange, sanitizeZipName, sleep,
 } from "./util.js";
 import adminHtml from "../../admin.html";
 
@@ -205,16 +205,24 @@ async function downloadFile(request, env, providerName, fileRef, url) {
   const q = url.searchParams;
   const email = requireEmail(q.get("email"));
   const name = q.get("name") || "download";
-  await dl.logDownload(env, {
-    email, optin: Number(q.get("optin") || 0) === 1, provider: providerName, source: q.get("source") || "",
-    galleryName: q.get("gallery") || "", kind: "photo", filenames: [name], ip: clientIp(request),
-  });
+  // Videos are resumable: a phone that pauses a big download (screen lock,
+  // app switch, flaky signal) comes back with a Range for the rest. The file
+  // ID is the validator; a resume is logged once, by its first request.
+  const etag = `"${fileRef}"`;
+  const range = isVideo(name) ? resumeRange(request, etag) : null;
+  if (!range || /^bytes=0-/.test(range)) {
+    await dl.logDownload(env, {
+      email, optin: Number(q.get("optin") || 0) === 1, provider: providerName, source: q.get("source") || "",
+      galleryName: q.get("gallery") || "", kind: "photo", filenames: [name], ip: clientIp(request),
+    });
+  }
 
   const headers = { "Content-Type": "application/octet-stream", "Content-Disposition": contentDisposition(name) };
   if (isVideo(name)) {
-    const res = await provider.openDownload(env, fileRef);
-    const length = res.headers.get("content-length");
-    return new Response(res.body, { headers: length ? { ...headers, "Content-Length": length } : headers });
+    const res = await provider.openDownload(env, fileRef, range);
+    const out = { ...headers, "Accept-Ranges": "bytes", ETag: etag };
+    for (const h of ["content-length", "content-range"]) if (res.headers.get(h)) out[h] = res.headers.get(h);
+    return new Response(res.body, { status: res.status, headers: out });
   }
   const data = await fetchBytes(env, provider, fileRef);
   if (!data.length) throw new LuxError(502, "LS-SRC-EMPTY", `file=${fileRef}`);

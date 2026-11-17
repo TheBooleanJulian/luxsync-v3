@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { HttpError, contentDisposition, dedupeNames, isVideo, normalizeEmail, requireAdmin, sanitizeZipName } from "../src/util.js";
+import { HttpError, contentDisposition, dedupeNames, isVideo, normalizeEmail, requireAdmin, resumeRange, sanitizeZipName } from "../src/util.js";
 
 test("normalizeEmail", () => {
   assert.equal(normalizeEmail(" Foo@Bar.COM "), "foo@bar.com");
@@ -43,4 +43,14 @@ test("admin auth: disabled without password, password required, username enforce
   assert.equal(await status(() => requireAdmin(basic("julian", "wrong"), named)), 401);
   assert.equal(await status(() => requireAdmin(basic("julian", "secret"), named)), 200);
   assert.equal(await status(() => requireAdmin(basic("julian", "se:cret"), { ...named, ADMIN_PASSWORD: "se:cret" })), 200);
+});
+
+test("resumeRange forwards a resume only when If-Range matches", () => {
+  const req = (h) => new Request("https://x/api/download/drive/abc", { headers: h });
+  const etag = '"abc1234567"';
+  assert.equal(resumeRange(req({}), etag), null);
+  assert.equal(resumeRange(req({ Range: "bytes=100-" }), etag), "bytes=100-");
+  assert.equal(resumeRange(req({ Range: "bytes=100-", "If-Range": etag }), etag), "bytes=100-");
+  assert.equal(resumeRange(req({ Range: "bytes=100-", "If-Range": '"other"' }), etag), null);
+  assert.equal(resumeRange(req({ Range: "bytes=100-", "If-Range": "Tue, 17 Nov 2026 20:36:07 GMT" }), etag), null);
 });
