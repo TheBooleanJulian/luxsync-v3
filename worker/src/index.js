@@ -8,6 +8,7 @@
 import * as cache from "./cache.js";
 import * as dl from "./downloads.js";
 import { newJob, readJobs, saveJob } from "./jobs.js";
+import { openSource, origKey, prepareResponse } from "./mirror.js";
 import * as drive from "./providers/drive.js";
 import * as dropbox from "./providers/dropbox.js";
 import { generatorToStream, zipStream } from "./zip.js";
@@ -20,8 +21,9 @@ import adminHtml from "../../admin.html";
 const PROVIDERS = { drive, dropbox };
 const MAX_ZIP_FILES = 200;
 const IMMUTABLE = "public, max-age=2592000, immutable";
-// Videos are tee'd into R2 while they stream to the client; cap the size so a
-// slow client can't make the tee buffer unbounded in the Worker's 128 MB.
+// Unprepared videos are tee'd into R2 while they stream to the client; cap the
+// size so a slow client can't make the tee buffer unbounded in the Worker's
+// 128 MB. Bigger files are mirrored by Prepare gallery (src/mirror.js).
 const MAX_VIDEO_CACHE_BYTES = 64 * 1024 * 1024;
 
 const CORS = {
@@ -99,68 +101,34 @@ async function serveImage(request, env, providerName, fileRef, kind) {
 }
 
 // ---------- video streaming ----------
-function parseRange(header, size) {
-  const m = /^bytes=(\d*)-(\d*)$/.exec(header || "");
-  if (!m || (m[1] === "" && m[2] === "")) return null;
-  let start, end;
-  if (m[1] === "") {                                  // suffix: last N bytes
-    start = Math.max(size - Number(m[2]), 0);
-    end = size - 1;
-  } else {
-    start = Number(m[1]);
-    end = m[2] === "" ? size - 1 : Math.min(Number(m[2]), size - 1);
-  }
-  return start > end || start >= size ? null : { start, end };
+/** Status, length/range headers and X-LuxSync-Source copied from openSource's response. */
+function passThroughHeaders(res, base) {
+  const headers = { ...base, "Accept-Ranges": "bytes" };
+  for (const h of ["content-length", "content-range", "x-luxsync-source"]) if (res.headers.get(h)) headers[h] = res.headers.get(h);
+  return headers;
 }
 
 async function streamVideo(request, env, ctx, providerName, fileRef, url) {
   await limit(env, request, "STREAM");
   const provider = getProvider(providerName);
   provider.validateRef(fileRef);
-  const key = `${providerName}/video/${fileRef}`;
   const guessed = guessType(url.searchParams.get("name") || "") || "video/mp4";
-  const rangeHeader = request.headers.get("Range");
 
-  const head = await env.CACHE.head(key).catch(() => null);
-  if (head) {
-    const base = { "Content-Type": head.httpMetadata?.contentType || guessed, "Cache-Control": IMMUTABLE, "Accept-Ranges": "bytes" };
-    const range = parseRange(rangeHeader, head.size);
-    if (!range) {
-      const obj = await cache.getObject(env, key);
-      if (obj) return new Response(obj.body, { headers: { ...base, "Content-Length": String(head.size) } });
-    } else {
-      const obj = await cache.getObject(env, key, { offset: range.start, length: range.end - range.start + 1 });
-      if (obj) {
-        return new Response(obj.body, {
-          status: 206,
-          headers: { ...base, "Content-Range": `bytes ${range.start}-${range.end}/${head.size}`, "Content-Length": String(range.end - range.start + 1) },
-        });
-      }
-    }
-  }
-
-  if (rangeHeader) {
-    // Forward the Range to the source so playback starts immediately (and Safari,
-    // which refuses to play without a ranged response, works). Not cached: a 206 is
-    // only part of the file; the full-file cache fills on whole-file requests.
-    const res = await provider.openDownload(env, fileRef, rangeHeader);
-    const headers = { "Content-Type": res.headers.get("content-type") || guessed, "Cache-Control": IMMUTABLE, "Accept-Ranges": "bytes" };
-    for (const h of ["content-range", "content-length"]) if (res.headers.get(h)) headers[h] = res.headers.get(h);
-    return new Response(res.body, { status: res.status, headers });
-  }
-
-  const res = await provider.openDownload(env, fileRef);
+  // Ranges are forwarded so playback starts immediately (and Safari, which
+  // refuses to play without a ranged response, works).
+  const res = await openSource(env, provider, providerName, fileRef, request.headers.get("Range"));
+  const headers = passThroughHeaders(res, { "Content-Type": guessed, "Cache-Control": IMMUTABLE });
   const length = Number(res.headers.get("content-length"));
-  const headers = { "Content-Type": guessed, "Cache-Control": IMMUTABLE, "Accept-Ranges": "bytes" };
-  if (length) headers["Content-Length"] = String(length);
-  if (length > 0 && length <= MAX_VIDEO_CACHE_BYTES) {
+  // An unprepared short clip is mirrored on its first whole-file play; longer
+  // ones wait for Prepare gallery.
+  if (res.headers.get("x-luxsync-source") === "source" && res.status === 200 && length > 0 && length <= MAX_VIDEO_CACHE_BYTES) {
     const [toClient, toCache] = res.body.tee();
     const fixed = new FixedLengthStream(length);
     toCache.pipeTo(fixed.writable).catch(() => {});
-    ctx.waitUntil(cache.putObject(env, key, fixed.readable, guessed));
+    ctx.waitUntil(cache.putObject(env, origKey(providerName, fileRef), fixed.readable, guessed));
     return new Response(toClient, { headers });
   }
-  return new Response(res.body, { headers });
+  return new Response(res.body, { status: res.status, headers });
 }
 
 // ---------- downloads ----------
@@ -168,11 +136,11 @@ async function streamVideo(request, env, ctx, providerName, fileRef, url) {
  * transfer off partway. Fetching whole lets us retry and send a correct
  * Content-Length, so a short transfer fails loudly instead of saving a
  * truncated "corrupt" photo. */
-async function fetchBytes(env, provider, fileRef, { attempts = 3, progress } = {}) {
+async function fetchBytes(env, provider, providerName, fileRef, { attempts = 3, progress } = {}) {
   for (let attempt = 0; attempt < attempts; attempt++) {
     if (progress) progress(0);
     try {
-      const res = await provider.openDownload(env, fileRef);
+      const res = await openSource(env, provider, providerName, fileRef);
       const expected = Number(res.headers.get("content-length")) || 0;
       const reader = res.body.getReader();
       const chunks = [];
@@ -219,12 +187,10 @@ async function downloadFile(request, env, providerName, fileRef, url) {
 
   const headers = { "Content-Type": "application/octet-stream", "Content-Disposition": contentDisposition(name) };
   if (isVideo(name)) {
-    const res = await provider.openDownload(env, fileRef, range);
-    const out = { ...headers, "Accept-Ranges": "bytes", ETag: etag };
-    for (const h of ["content-length", "content-range"]) if (res.headers.get(h)) out[h] = res.headers.get(h);
-    return new Response(res.body, { status: res.status, headers: out });
+    const res = await openSource(env, provider, providerName, fileRef, range);
+    return new Response(res.body, { status: res.status, headers: passThroughHeaders(res, { ...headers, ETag: etag }) });
   }
-  const data = await fetchBytes(env, provider, fileRef);
+  const data = await fetchBytes(env, provider, providerName, fileRef);
   if (!data.length) throw new LuxError(502, "LS-SRC-EMPTY", `file=${fileRef}`);
   return new Response(data, { headers });
 }
@@ -299,7 +265,7 @@ async function downloadZip(request, env, ctx) {
       track(true);
       if (isVideo(names[i])) {
         try {
-          const res = await provider.openDownload(env, refs[i]);
+          const res = await openSource(env, provider, providerName, refs[i]);
           yield { name: names[i], date: now, data: videoContent(i, refs[i], res), size: Number(res.headers.get("content-length")) || 0 };
         } catch (err) {
           job.st[i] = "f";
@@ -311,7 +277,7 @@ async function downloadZip(request, env, ctx) {
       }
       let data;
       try {
-        data = await fetchBytes(env, provider, refs[i], { progress: setBytes });
+        data = await fetchBytes(env, provider, providerName, refs[i], { progress: setBytes });
       } catch (err) {
         job.st[i] = "f";
         const fail = (job.fail[i] = describe(err, `zip member ${names[i]}`));
@@ -359,8 +325,21 @@ const csvCell = (v) => {
 };
 const csvRow = (cells) => cells.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(",");
 
-async function adminRoutes(request, env, url) {
+async function adminRoutes(request, env, ctx, url) {
   await requireAdmin(request, env);
+  if (url.pathname === "/api/admin/prepare") {
+    // One call per file and a gallery can have hundreds, so this route skips
+    // RL_ADMIN; it's behind admin auth and paced against the source anyway.
+    if (request.method !== "POST") throw new HttpError(405, "Method not allowed");
+    let body;
+    try { body = await request.json(); } catch { throw new HttpError(422, "Invalid JSON body"); }
+    const providerName = body.provider || "drive";
+    const provider = getProvider(providerName);
+    provider.validateRef(body.id);
+    const name = String(body.name || "");
+    return prepareResponse(env, ctx, provider, providerName, { ref: body.id, name, video: isVideo(name) });
+  }
+  if (request.method !== "GET") throw new HttpError(405, "Method not allowed");
   await limit(env, request, "ADMIN");
   const q = (url.searchParams.get("q") || "").trim();
   switch (url.pathname) {
@@ -405,10 +384,7 @@ async function route(request, env, ctx) {
   const method = request.method;
   let m;
 
-  if (path === "/admin" || path.startsWith("/api/admin/")) {
-    if (method !== "GET") throw new HttpError(405, "Method not allowed");
-    return adminRoutes(request, env, url);
-  }
+  if (path === "/admin" || path.startsWith("/api/admin/")) return adminRoutes(request, env, ctx, url);
   if (path === "/api/gallery" && method === "POST") return getGallery(request, env);
   if (path === "/api/download-zip" && method === "POST") return downloadZip(request, env, ctx);
   if (path === "/api/download-progress" && method === "GET") {

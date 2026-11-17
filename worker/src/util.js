@@ -113,6 +113,8 @@ const MIME = {
   heic: "image/heic", bmp: "image/bmp", tif: "image/tiff", tiff: "image/tiff",
   mp4: "video/mp4", mov: "video/quicktime", m4v: "video/x-m4v", webm: "video/webm",
   avi: "video/x-msvideo", mkv: "video/x-matroska",
+  // DJI (.lrf) and GoPro/Insta360 (.lrv) low-res proxies are plain MP4s.
+  lrf: "video/mp4", lrv: "video/mp4",
 };
 
 export function guessType(name) {
