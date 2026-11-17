@@ -159,7 +159,9 @@ Carrying the email log over: export the Python app's `/admin` data (`/api/admin/
 
 Local dev: put secrets in `worker/.dev.vars` (git-ignored), `npm run dev`. Tests: `cd worker && npm test` (zip output is verified with Python's `zipfile`).
 
-Differences from the Python app to know about: Drive request pacing is per Worker isolate rather than global; zip progress is best-effort per data centre; videos are cached in R2 only up to 64 MB; the `CDN_BASE_URL` redirect is gone (the Worker serves R2 directly with long browser caching). Cutover (custom domain route in `wrangler.jsonc`, DNS) is a separate, explicit step.
+Differences from the Python app to know about: Drive request pacing is per Worker isolate rather than global; zip progress is best-effort per data centre; the `CDN_BASE_URL` redirect is gone (the Worker serves R2 directly with long browser caching). Cutover (custom domain route in `wrangler.jsonc`, DNS) is a separate, explicit step.
+
+**Prepare gallery (Worker only).** Google Drive throttles bursts and caps how often a public file can be downloaded per day, so a gallery shared to a group can lock clients out of its videos. In `/admin`, paste the gallery link into *Prepare gallery* after uploading and before sharing. It copies every thumbnail, preview and original into R2 (`<provider>/{thumb,full,orig}/<file id>`, see `worker/src/mirror.js`), two files at a time, skipping anything already copied. Previews, single downloads (resumable, with Range) and zips are then served from R2. The `X-LuxSync-Source: r2|source` response header shows which was used. Unprepared files still come from the source, and videos only get mirrored on play if they're under 64 MB. Files over 4.9 GB (one R2 put) always stream from the source. Mirrored files are kept with no expiry, so R2 storage grows with every prepared gallery (~$0.015/GB-month beyond the free 10 GB).
 
 ## Screenshots
 
