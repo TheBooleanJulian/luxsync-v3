@@ -206,13 +206,16 @@ export function prepareResponse(env, ctx, provider, providerName, file) {
 // mirrors whatever is missing, picks up files uploaded later, and keeps
 // retrying failures (e.g. once Google lifts a per-file download block), so a
 // gallery converges to fully mirrored without anyone pressing Prepare.
+// Originals of a gallery nobody has opened for 30 days (MIRROR_EXPIRE_DAYS) are
+// deleted from R2; thumbnails and previews are kept forever, so the gallery
+// still browses instantly, and opening it again re-copies the originals.
 // Additive tables, created on first use (also in schema.sql).
 const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS mirror_galleries (
      provider TEXT NOT NULL, source TEXT NOT NULL, name TEXT NOT NULL DEFAULT '',
      added_at TEXT NOT NULL, next_check TEXT NOT NULL, last_run TEXT,
      files INTEGER NOT NULL DEFAULT 0, ready INTEGER NOT NULL DEFAULT 0, failed INTEGER NOT NULL DEFAULT 0,
-     last_error TEXT, paused INTEGER NOT NULL DEFAULT 0,
+     last_error TEXT, paused INTEGER NOT NULL DEFAULT 0, last_opened TEXT, expired_at TEXT,
      PRIMARY KEY (provider, source))`,
   `CREATE TABLE IF NOT EXISTS mirror_files (
      provider TEXT NOT NULL, source TEXT NOT NULL, ref TEXT NOT NULL, done_at TEXT NOT NULL,
@@ -222,30 +225,46 @@ const SCHEMA = [
      parts TEXT NOT NULL, updated_at TEXT NOT NULL,
      PRIMARY KEY (provider, ref))`,
 ];
+// Columns added after the table first shipped. ADD COLUMN fails once the
+// column exists (or the CREATE above already had it); that's expected.
+const ADDED_COLUMNS = [
+  "ALTER TABLE mirror_galleries ADD COLUMN last_opened TEXT",
+  "ALTER TABLE mirror_galleries ADD COLUMN expired_at TEXT",
+];
 // Per-DB flag, not a shared promise: awaiting another request's pending I/O can hang.
 const schemaDone = new WeakSet();
 export async function ensureSchema(env) {
   if (schemaDone.has(env.DB)) return;
   await env.DB.batch(SCHEMA.map((sql) => env.DB.prepare(sql)));
+  for (const sql of ADDED_COLUMNS) {
+    try {
+      await env.DB.prepare(sql).run();
+    } catch (err) {
+      if (!/duplicate column/i.test(String(err?.message))) throw err;
+    }
+  }
   schemaDone.add(env.DB);
 }
 
 const iso = (ms = Date.now()) => new Date(ms).toISOString();
 const MINUTE = 60_000;
+const DAY = 24 * 60 * MINUTE;
+const NEVER = "9999-12-31T00:00:00.000Z";   // next_check of an expired gallery: wait to be opened
 const OK_PARTS = ["cached", "copied"];
 export const isReady = (parts) => Object.values(parts).every((v) => OK_PARTS.includes(v));
 
-/** Called when a gallery is opened: register it, and have the next cron run
- * re-check it (new uploads). Never throws — must not break the gallery. */
+/** Called when a gallery is opened: register it, restart its 30-day clock,
+ * and have the next cron run re-check it (new uploads, or re-copying expired
+ * originals). Never throws — must not break the gallery. */
 export async function registerGallery(env, providerName, source, name) {
   try {
     await ensureSchema(env);
     const now = iso();
     await env.DB.prepare(
-      "INSERT INTO mirror_galleries (provider, source, name, added_at, next_check) VALUES (?,?,?,?,?)" +
-        " ON CONFLICT(provider, source) DO UPDATE SET name = excluded.name," +
-        " next_check = MIN(mirror_galleries.next_check, excluded.next_check)",
-    ).bind(providerName, source, String(name || "").slice(0, 200), now, now).run();
+      "INSERT INTO mirror_galleries (provider, source, name, added_at, next_check, last_opened) VALUES (?,?,?,?,?,?)" +
+        " ON CONFLICT(provider, source) DO UPDATE SET name = excluded.name, last_opened = excluded.last_opened," +
+        " expired_at = NULL, next_check = MIN(mirror_galleries.next_check, excluded.next_check)",
+    ).bind(providerName, source, String(name || "").slice(0, 200), now, now, now).run();
   } catch (err) {
     console.error("registerGallery failed", err);
   }
@@ -257,7 +276,7 @@ export async function markDone(env, providerName, source, ref) {
     .bind(providerName, source, ref, iso()).run();
 }
 
-const GALLERY_FIELDS = new Set(["next_check", "last_run", "files", "ready", "failed", "last_error", "paused"]);
+const GALLERY_FIELDS = new Set(["next_check", "last_run", "files", "ready", "failed", "last_error", "paused", "expired_at"]);
 async function setGallery(env, g, fields) {
   const keys = Object.keys(fields).filter((k) => GALLERY_FIELDS.has(k));
   await env.DB.prepare(`UPDATE mirror_galleries SET ${keys.map((k) => `${k} = ?`).join(", ")} WHERE provider = ? AND source = ?`)
@@ -272,7 +291,42 @@ export async function listMirrors(env) {
 
 export async function setPaused(env, providerName, source, paused) {
   await ensureSchema(env);
-  await setGallery(env, { provider: providerName, source }, { paused: paused ? 1 : 0, next_check: iso() });
+  // Resuming an expired gallery doesn't re-copy it; opening it does.
+  await env.DB.prepare(
+    "UPDATE mirror_galleries SET paused = ?, next_check = CASE WHEN expired_at IS NULL THEN ? ELSE next_check END" +
+      " WHERE provider = ? AND source = ?",
+  ).bind(paused ? 1 : 0, iso(), providerName, source).run();
+}
+
+/** Delete the R2 originals of galleries nobody has opened for `days` days
+ * (thumbnails and previews stay). Their done-records go in the same step, for
+ * every gallery holding those files, so nothing still counts a deleted file as
+ * mirrored and a re-open copies it again. A file that's also in a gallery
+ * opened within the window (a folder inside another) is kept. */
+export async function expireOriginals(env, { days = Number(env.MIRROR_EXPIRE_DAYS) || 30, now = Date.now() } = {}) {
+  await ensureSchema(env);
+  const cutoff = iso(now - days * DAY);
+  const { results: stale } = await env.DB.prepare(
+    "SELECT provider, source FROM mirror_galleries WHERE expired_at IS NULL AND COALESCE(last_opened, added_at) < ? LIMIT 10",
+  ).bind(cutoff).all();
+  for (const g of stale) {
+    const { results } = await env.DB.prepare(
+      "SELECT f.ref, EXISTS (SELECT 1 FROM mirror_files o JOIN mirror_galleries og" +
+        " ON og.provider = o.provider AND og.source = o.source" +
+        " WHERE o.provider = f.provider AND o.ref = f.ref AND o.source != f.source" +
+        " AND COALESCE(og.last_opened, og.added_at) >= ?) AS shared" +
+        " FROM mirror_files f WHERE f.provider = ? AND f.source = ?",
+    ).bind(cutoff, g.provider, g.source).all();
+    const gone = results.filter((r) => !r.shared).map((r) => r.ref);
+    for (let i = 0; i < gone.length; i += 1000) {
+      await env.CACHE.delete(gone.slice(i, i + 1000).map((ref) => origKey(g.provider, ref)));
+    }
+    const forget = gone.map((ref) => env.DB.prepare("DELETE FROM mirror_files WHERE provider = ? AND ref = ?").bind(g.provider, ref));
+    forget.push(env.DB.prepare("DELETE FROM mirror_files WHERE provider = ? AND source = ?").bind(g.provider, g.source));
+    for (let i = 0; i < forget.length; i += 100) await env.DB.batch(forget.slice(i, i + 100));
+    await setGallery(env, g, { expired_at: iso(now), ready: 0, failed: 0, last_error: null, next_check: NEVER });
+    console.log(`expired originals of ${g.provider}/${g.source}: ${gone.length} deleted, ${results.length - gone.length} shared`);
+  }
 }
 
 /** One cron run. Galleries are leased (next_check pushed out) while being
@@ -283,7 +337,8 @@ export async function runMirror(env, providers, { budgetMs = 4 * MINUTE, maxFile
   const stopAt = Date.now() + budgetMs;
   let left = maxFiles;
   const { results: due } = await env.DB.prepare(
-    "SELECT provider, source FROM mirror_galleries WHERE paused = 0 AND next_check <= ? ORDER BY next_check LIMIT 20",
+    "SELECT provider, source FROM mirror_galleries WHERE paused = 0 AND expired_at IS NULL AND next_check <= ?" +
+      " ORDER BY next_check LIMIT 20",
   ).bind(iso()).all();
 
   for (const g of due) {

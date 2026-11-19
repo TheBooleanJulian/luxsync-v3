@@ -6,7 +6,7 @@
 
 **A premium, dependency-free photo gallery that turns any public Google Drive or Dropbox folder into a scrollable, previewable, downloadable client gallery.**
 
-![Version](https://img.shields.io/badge/version-0.14.1-00E5FF)
+![Version](https://img.shields.io/badge/version-0.15.0-00E5FF)
 ![Python](https://img.shields.io/badge/-Python-3776AB?logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/-FastAPI-009688?logo=fastapi&logoColor=white)
 ![Zeabur](https://img.shields.io/badge/-Zeabur-6C5CE7)
@@ -167,7 +167,8 @@ Differences from the Python app to know about: Drive request pacing is per Worke
 - **Right now:** `/admin` → *Prepare gallery* copies a gallery immediately from your browser (two files at a time, with progress), for when you want it fully mirrored before sharing the link. The table below it lists every mirrored gallery with its status and a Pause/Resume switch.
 - Thumbnails and previews come from Google's image CDN (`lh3.googleusercontent.com`), with `drive.google.com/thumbnail` as fallback. Until a thumbnail is mirrored, the gallery page keeps the tile's shape and retries for about 3 minutes.
 - Files over 256 MB are copied in 256 MB parts (R2 multipart, one ranged download per part). Finished parts are recorded in D1 `mirror_uploads`, so a copy that outlives a cron run resumes where it stopped instead of restarting.
-- Unmirrored files still come from the source. Mirrored files have no expiry, so storage grows with every gallery (~$0.015/GB-month beyond the free 10 GB). Anyone who opens a public folder in LuxSync enrols it, so pause any you don't want kept.
+- **Expiry:** the originals of a gallery nobody has opened for 30 days are deleted from R2. That's every gallery, photos and video alike; `MIRROR_EXPIRE_DAYS` overrides the 30. Thumbnails and previews are kept forever, so an old link still browses instantly. Opening it again restarts the clock and the background mirror copies the originals back; downloads come from the source until it has. Files shared with a gallery opened in the last 30 days (a folder inside another) are kept. `/admin` shows each gallery's last-opened date and an *Originals expired* status.
+- Unmirrored files still come from the source. Storage therefore stays roughly at the originals of galleries opened in the last month, plus ~0.5 MB per photo of thumbnails and previews (~$0.015/GB-month beyond the free 10 GB). Anyone who opens a public folder in LuxSync enrols it, so pause any you don't want copied.
 
 ## Screenshots
 
@@ -284,6 +285,7 @@ lists the failed files, and a `_MISSING_FILES.txt` inside the zip names them wit
 
 Summarised from commit history, most recent first. Versions follow `0.MINOR.PATCH` — MINOR for new features/architecture changes, PATCH for fixes.
 
+- **v0.15.0 — 2026-11-19 (30-day expiry of originals)** — The background mirror deletes the R2 originals of galleries not opened for 30 days, and their done-records with them so a re-open copies them back. Thumbnails and previews are never deleted. `/admin` shows last-opened dates and an *Originals expired* status. Additive D1 columns `last_opened` / `expired_at`, added on first use.
 - **v0.14.1 — 2026-11-19 (resumable big-file mirroring)** — Originals over 256 MB are copied into R2 in 256 MB parts (multipart, progress in D1 `mirror_uploads`), so a copy that outlives a cron run resumes instead of restarting. A 3.4 GB Cam 2 clip had stalled the Miku gallery's mirror at 50/126 files. The 4.9 GB single-file limit is gone.
 - **v0.14.0 — 2026-11-19 (R2 mirror)** — Galleries are copied into R2 and served from there, so clients no longer hit Google Drive's burst throttling (blank thumbnails) or per-file download caps (`LS-DRV-FILE` on popular videos). There's a background Cron Trigger mirror for every opened gallery, plus *Prepare gallery* in `/admin` with a mirrored-galleries table. Thumbnails now come from Google's image CDN first. Removed a shared thumbnail queue that leaked slots when browsers cancelled image loads, which hung later thumbnails (Cloudflare error 1101). Single video downloads are resumable (Range/If-Range, logged once). Tiles keep their shape while a thumbnail retries. `.lrf`/`.lrv` proxies are treated as video.
 - **v0.13.1 — 2026-11-16 (Unified UI brand assets)** — Raster assets redone in the Unified UI palette: favicon/logo mark (arrows recoloured with the signal gradient, stray edge line removed), home-screen icon, full logo, link-preview card and README banner (v4; v1–v3 kept). Sources and how to re-render them: `assets/source/`. Image URLs in the page head carry `?v=2` so cached gold previews refresh.
