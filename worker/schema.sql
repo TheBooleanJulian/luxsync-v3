@@ -22,8 +22,11 @@ CREATE TABLE IF NOT EXISTS mirror_galleries (
      provider TEXT NOT NULL, source TEXT NOT NULL, name TEXT NOT NULL DEFAULT '',
      added_at TEXT NOT NULL, next_check TEXT NOT NULL, last_run TEXT,
      files INTEGER NOT NULL DEFAULT 0, ready INTEGER NOT NULL DEFAULT 0, failed INTEGER NOT NULL DEFAULT 0,
-     last_error TEXT, paused INTEGER NOT NULL DEFAULT 0,
+     last_error TEXT, paused INTEGER NOT NULL DEFAULT 0, last_opened TEXT, expired_at TEXT,
      PRIMARY KEY (provider, source));
+-- Added 2026-11-19 (v0.15.0). On a table created earlier, mirror.js adds them on first use:
+--   ALTER TABLE mirror_galleries ADD COLUMN last_opened TEXT;
+--   ALTER TABLE mirror_galleries ADD COLUMN expired_at TEXT;
 CREATE TABLE IF NOT EXISTS mirror_files (
      provider TEXT NOT NULL, source TEXT NOT NULL, ref TEXT NOT NULL, done_at TEXT NOT NULL,
      PRIMARY KEY (provider, source, ref));

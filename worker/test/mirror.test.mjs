@@ -27,6 +27,9 @@ function fakeR2() {
       const bytes = new Uint8Array(await new Response(value).arrayBuffer());
       store.set(key, { bytes, meta: opts?.httpMetadata });
     },
+    async delete(keys) {
+      for (const k of [].concat(keys)) store.delete(k);
+    },
     uploads,
     async createMultipartUpload(key, opts) {
       const id = `upload${uploads.size + 1}`;
@@ -137,7 +140,7 @@ test("openSource serves the R2 copy (with ranges) and falls back to the source",
 
 // ---------- background runner ----------
 import { DatabaseSync } from "node:sqlite";
-import { listMirrors, registerGallery, runMirror, setPaused } from "../src/mirror.js";
+import { ensureSchema, expireOriginals, listMirrors, registerGallery, runMirror, setPaused } from "../src/mirror.js";
 
 /** Just enough of the D1 binding (prepare/bind/run/all/first/batch) over node:sqlite. */
 function fakeD1() {
@@ -285,4 +288,100 @@ test("runMirror treats a stopped big copy as unfinished, not failed", async () =
   assert.ok(g.next_check <= new Date().toISOString(), "due again on the next run");
   for (let i = 0; i < 5 && (await listMirrors(env))[0].ready === 0; i++) await runMirror(env, { drive: p }, { budgetMs: 50 });
   assert.equal((await listMirrors(env))[0].ready, 1, "finishes over a few runs");
+});
+
+// ---------- expiry: originals 30 days after last open ----------
+const DAY = 24 * 3600e3;
+const later = (days) => Date.now() + days * DAY;
+
+async function mirroredGallery(source, files) {
+  const env = { CACHE: fakeR2(), DB: fakeD1() };
+  const p = galleryProvider(files);
+  await registerGallery(env, "drive", source, "Shoot");
+  await runMirror(env, { drive: p });
+  return { env, p };
+}
+
+test("originals expire 30 days after the last open; thumbnails and previews stay", async () => {
+  const files = [{ id: "photo123456", name: "a.jpg" }, { id: "video123456", name: "b.MP4" }];
+  const { env, p } = await mirroredGallery("folder1234", files);
+
+  await expireOriginals(env, { now: later(29) });
+  assert.equal((await listMirrors(env))[0].expired_at, null, "not yet");
+
+  await expireOriginals(env, { now: later(31) });
+  const [g] = await listMirrors(env);
+  assert.ok(g.expired_at);
+  assert.equal(g.ready, 0);
+  assert.equal(env.CACHE.store.has(origKey("drive", "photo123456")), false);
+  assert.equal(env.CACHE.store.has(origKey("drive", "video123456")), false);
+  assert.ok(env.CACHE.store.has("drive/thumb/photo123456"));
+  assert.ok(env.CACHE.store.has("drive/full/photo123456"));
+  assert.ok(env.CACHE.store.has("drive/thumb/video123456"));
+  assert.equal(env.DB.raw.prepare("SELECT COUNT(*) AS n FROM mirror_files").get().n, 0, "done-records go with the files");
+
+  const before = p.calls.download;
+  await runMirror(env, { drive: p });
+  assert.equal(p.calls.download, before, "an expired gallery isn't re-copied until it's opened");
+  await setPaused(env, "drive", "folder1234", true);
+  await setPaused(env, "drive", "folder1234", false);
+  await runMirror(env, { drive: p });
+  assert.equal(p.calls.download, before, "nor by pausing and resuming it");
+
+  await registerGallery(env, "drive", "folder1234", "Shoot");
+  await runMirror(env, { drive: p });
+  const [again] = await listMirrors(env);
+  assert.equal(again.expired_at, null);
+  assert.equal(again.ready, 2);
+  assert.ok(env.CACHE.store.has(origKey("drive", "photo123456")), "opening it copied the originals back");
+});
+
+test("opening a gallery restarts its 30 days", async () => {
+  const { env } = await mirroredGallery("folder1234", [{ id: "photo123456", name: "a.jpg" }]);
+  env.DB.raw.prepare("UPDATE mirror_galleries SET last_opened = ?").run(new Date(Date.now() - 40 * DAY).toISOString());
+  await registerGallery(env, "drive", "folder1234", "Shoot");   // opened today
+  await expireOriginals(env);
+  assert.equal((await listMirrors(env))[0].expired_at, null);
+  assert.ok(env.CACHE.store.has(origKey("drive", "photo123456")));
+});
+
+test("a file shared with a gallery opened recently is kept; one shared with a stale gallery is forgotten everywhere", async () => {
+  const env = { CACHE: fakeR2(), DB: fakeD1() };
+  const shared = { id: "shared12345", name: "s.jpg" };
+  const own = { id: "own1234567", name: "o.jpg" };
+  // "outer" contains everything; "inner" is a subfolder holding the shared file.
+  const outer = galleryProvider([shared, own]);
+  await registerGallery(env, "drive", "outer12345", "Outer");
+  await runMirror(env, { drive: outer });
+  await registerGallery(env, "drive", "inner12345", "Inner");
+  await runMirror(env, { drive: galleryProvider([shared]) });
+
+  // Outer is stale; inner was opened within the window.
+  env.DB.raw.prepare("UPDATE mirror_galleries SET last_opened = ? WHERE source = 'outer12345'").run(new Date(Date.now() - 40 * DAY).toISOString());
+  await expireOriginals(env);
+  assert.ok(env.CACHE.store.has(origKey("drive", "shared12345")), "inner still uses it");
+  assert.equal(env.CACHE.store.has(origKey("drive", "own1234567")), false);
+
+  // Now inner goes stale too: its shared file is deleted along with every record of it.
+  env.DB.raw.prepare("UPDATE mirror_galleries SET last_opened = ? WHERE source = 'inner12345'").run(new Date(Date.now() - 40 * DAY).toISOString());
+  await expireOriginals(env);
+  assert.equal(env.CACHE.store.has(origKey("drive", "shared12345")), false);
+  assert.equal(env.DB.raw.prepare("SELECT COUNT(*) AS n FROM mirror_files").get().n, 0);
+});
+
+test("ensureSchema adds the new columns to a table created by the previous version", async () => {
+  const env = { DB: fakeD1() };
+  env.DB.raw.exec(`CREATE TABLE mirror_galleries (
+     provider TEXT NOT NULL, source TEXT NOT NULL, name TEXT NOT NULL DEFAULT '',
+     added_at TEXT NOT NULL, next_check TEXT NOT NULL, last_run TEXT,
+     files INTEGER NOT NULL DEFAULT 0, ready INTEGER NOT NULL DEFAULT 0, failed INTEGER NOT NULL DEFAULT 0,
+     last_error TEXT, paused INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (provider, source))`);
+  env.DB.raw.prepare("INSERT INTO mirror_galleries (provider, source, added_at, next_check) VALUES ('drive','old1234567',?,?)")
+    .run(new Date(Date.now() - 40 * DAY).toISOString(), new Date().toISOString());
+  await ensureSchema(env);
+  const cols = env.DB.raw.prepare("PRAGMA table_info(mirror_galleries)").all().map((c) => c.name);
+  assert.ok(cols.includes("last_opened") && cols.includes("expired_at"));
+  env.CACHE = fakeR2();
+  await expireOriginals(env);
+  assert.ok((await listMirrors(env))[0].expired_at, "a never-reopened gallery falls back to added_at");
 });
