@@ -182,17 +182,5 @@ export async function requireAdmin(request, env) {
 }
 
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-/** Caps how many async tasks run at once. */
-export class Semaphore {
-  constructor(n) { this.free = n; this.queue = []; }
-  async run(fn) {
-    if (this.free > 0) this.free--;
-    else await new Promise((resolve) => this.queue.push(resolve));
-    try { return await fn(); }
-    finally {
-      const next = this.queue.shift();
-      if (next) next(); else this.free++;
-    }
-  }
-}
+// No module-level Semaphore/queue: Workers share an isolate across requests, and
+// a slot held by a cancelled request is never released (hangs -> error 1101).
