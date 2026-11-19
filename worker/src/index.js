@@ -8,7 +8,9 @@
 import * as cache from "./cache.js";
 import * as dl from "./downloads.js";
 import { newJob, readJobs, saveJob } from "./jobs.js";
-import { listMirrors, openSource, origKey, prepareResponse, registerGallery, runMirror, setPaused } from "./mirror.js";
+import {
+  expireOriginals, listMirrors, openSource, origKey, prepareResponse, registerGallery, runMirror, setPaused,
+} from "./mirror.js";
 import * as drive from "./providers/drive.js";
 import * as dropbox from "./providers/dropbox.js";
 import { generatorToStream, zipStream } from "./zip.js";
@@ -434,8 +436,12 @@ export default {
     return out;
   },
 
-  // Cron Trigger (wrangler.jsonc): background mirroring of opened galleries.
+  // Cron Trigger (wrangler.jsonc): expire originals of galleries not opened for
+  // 30 days, then mirror whatever opened galleries are still missing.
   async scheduled(event, env, ctx) {
-    ctx.waitUntil(runMirror(env, PROVIDERS).catch((err) => console.error("runMirror failed", err)));
+    ctx.waitUntil((async () => {
+      await expireOriginals(env).catch((err) => console.error("expireOriginals failed", err));
+      await runMirror(env, PROVIDERS).catch((err) => console.error("runMirror failed", err));
+    })());
   },
 };

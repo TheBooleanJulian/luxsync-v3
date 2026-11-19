@@ -276,7 +276,7 @@ td.mono{font-size:11.5px;line-height:16px;font-weight:500;letter-spacing:0.02em;
 
   <section class="panel" aria-labelledby="prepTitle">
     <div class="eyebrow" id="prepTitle">Prepare gallery</div>
-    <p>Every gallery that gets opened is copied into LuxSync's own storage automatically in the background (every 5 minutes, including files added later), so clients never hit Google Drive's limits. Use Prepare to do it right now, before you share the link. Safe to re-run: files already copied are skipped.</p>
+    <p>Every gallery that gets opened is copied into LuxSync's own storage automatically in the background (every 5 minutes, including files added later), so clients never hit Google Drive's limits. Use Prepare to do it right now, before you share the link. Safe to re-run: files already copied are skipped. Originals of a gallery nobody opens for 30 days are deleted (thumbnails and previews stay), and copied again the next time it's opened.</p>
     <form class="prep-row" id="prepForm">
       <input type="url" id="prepUrl" required placeholder="Paste the Drive / Dropbox folder link or LuxSync gallery link" aria-label="Gallery link">
       <button class="btn primary" id="prepBtn" type="submit">Prepare</button>
@@ -528,7 +528,7 @@ td.mono{font-size:11.5px;line-height:16px;font-weight:500;letter-spacing:0.02em;
     let rows;
     try { rows = await api('/api/admin/mirrors'); } catch(e){ return; }
     const table = $('mirrors');
-    table.replaceChildren(header(['Gallery', 'Mirrored', 'Status', 'Last checked', '']));
+    table.replaceChildren(header(['Gallery', 'Mirrored', 'Status', 'Last opened', '']));
     const tbody = el('tbody');
     rows.forEach(r=>{
       const tr = el('tr');
@@ -536,7 +536,8 @@ td.mono{font-size:11.5px;line-height:16px;font-weight:500;letter-spacing:0.02em;
       a.href = `/?provider=${encodeURIComponent(r.provider)}&source=${encodeURIComponent(r.source)}`;
       a.target = '_blank'; a.rel = 'noopener';
       let status;
-      if(r.paused) status = el('span', 'badge', 'Paused');
+      if(r.expired_at) status = el('span', 'badge', 'Originals expired · re-copied on next open');
+      else if(r.paused) status = el('span', 'badge', 'Paused');
       else if(!r.last_run) status = el('span', 'badge', 'Queued');
       else if(r.files && r.ready >= r.files) status = el('span', 'badge ok', 'Ready');
       else if(r.failed) status = el('span', 'badge warn', `${r.failed} retrying · ${r.last_error || ''}`);
@@ -549,8 +550,8 @@ td.mono{font-size:11.5px;line-height:16px;font-weight:500;letter-spacing:0.02em;
           body: JSON.stringify({provider: r.provider, source: r.source, paused: !r.paused})}).catch(()=>{});
         loadMirrors();
       });
-      tr.append(td(a), el('td', 'mono', r.last_run ? `${r.ready} / ${r.files}` : '—'), td(status),
-        el('td', 'mono', r.last_run ? fmtDate(r.last_run) : '—'), td(btn));
+      tr.append(td(a), el('td', 'mono', r.last_run && !r.expired_at ? `${r.ready} / ${r.files}` : '—'), td(status),
+        el('td', 'mono', fmtDate(r.last_opened || r.added_at)), td(btn));
       tbody.append(tr);
     });
     table.append(tbody);
