@@ -3,7 +3,7 @@
 //   parseSource(url) · validateRef(ref) · listGallery(env, sourceId)
 //   getThumb(env, ref) / getFull(env, ref) -> {bytes, contentType}
 //   openDownload(env, ref, range?) -> upstream Response (200/206) with a body stream
-import { HttpError, LuxError, Semaphore, sleep } from "../util.js";
+import { HttpError, LuxError, sleep } from "../util.js";
 
 const DRIVE_ID_RE = /^[a-zA-Z0-9_-]{10,}$/;
 const URL_PATTERNS = [/\/folders\/([a-zA-Z0-9_-]{10,})/, /[?&]id=([a-zA-Z0-9_-]{10,})/];
@@ -88,7 +88,6 @@ const MIN_INTERVAL_MS = 120;
 const MAX_ATTEMPTS = 3;
 const RATE_LIMIT_REASONS = new Set(["userRateLimitExceeded", "rateLimitExceeded", "sharingRateLimitExceeded"]);
 let lastRequest = 0;
-const thumbSlots = new Semaphore(10);
 
 async function pace(env) {
   const interval = Number(env.DRIVE_MIN_INTERVAL_MS ?? MIN_INTERVAL_MS);
@@ -115,33 +114,45 @@ async function backoff(attempt, res) {
   await sleep(delay * 1000 + Math.random() * 500);
 }
 
-async function fetchPublicImage(fileRef, size) {
-  const url = `https://drive.google.com/thumbnail?id=${fileRef}&sz=${size}`;
-  return thumbSlots.run(async () => {
-    let res;
-    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+// Two public, unauthenticated image endpoints for a link-shared file (both give
+// a frame for videos too). lh3 is Google's image CDN and copes with bursts from
+// Cloudflare's shared IPs much better than drive.google.com/thumbnail, which
+// answers them with 403s or an HTML "sorry" page, so it's only the fallback.
+const imageUrls = (ref, width) => [
+  `https://lh3.googleusercontent.com/d/${ref}=w${width}`,
+  `https://drive.google.com/thumbnail?id=${ref}&sz=w${width}`,
+];
+
+// No cross-request concurrency cap here on purpose: a slot held by a request the
+// browser cancelled (scrolling, closed tab) is never released, and every later
+// thumbnail in that isolate then hangs until Cloudflare kills it (error 1101).
+async function fetchPublicImage(fileRef, width) {
+  let res;
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+    for (const url of imageUrls(fileRef, width)) {
       res = await fetch(url, { redirect: "follow" });
       const type = res.headers.get("content-type") || "";
-      // A throttled request can come back 200 with an HTML "sorry" page;
-      // only image bytes count as success (and only those get cached in R2).
+      // A throttled request can come back 200 with an HTML page; only image
+      // bytes count as success (and only those get cached in R2).
       if (res.status === 200 && type.startsWith("image/")) {
         return { bytes: await res.arrayBuffer(), contentType: type };
       }
-      console.warn(`Drive thumbnail ${fileRef} -> ${res.status} ${type} (attempt ${attempt + 1})`);
-      // This unauthenticated endpoint answers bursts with 403 as well as 429.
-      const transient = res.status === 200 || res.status === 403 || isTransient(res.status, "");
-      if (!transient || attempt === MAX_ATTEMPTS - 1) break;
-      await backoff(attempt, res);
+      await res.body?.cancel();
+      console.warn(`Drive image ${fileRef} ${new URL(url).host} -> ${res.status} ${type} (attempt ${attempt + 1})`);
     }
-    if (res.status === 200 || res.status === 403 || res.status === 429 || res.status >= 500) {
-      throw new LuxError(503, "LS-DRV-RATE", `thumbnail ${fileRef} status=${res.status}`);
-    }
-    throw new LuxError(404, "LS-DRV-GONE", `thumbnail ${fileRef} status=${res.status}`);
-  });
+    // The last response is drive.google.com's; it answers bursts with 403 as well as 429.
+    const transient = res.status === 200 || res.status === 403 || isTransient(res.status, "");
+    if (!transient || attempt === MAX_ATTEMPTS - 1) break;
+    await backoff(attempt, res);
+  }
+  if (res.status === 200 || res.status === 403 || res.status === 429 || res.status >= 500) {
+    throw new LuxError(503, "LS-DRV-RATE", `image ${fileRef} status=${res.status}`);
+  }
+  throw new LuxError(404, "LS-DRV-GONE", `image ${fileRef} status=${res.status}`);
 }
 
-export const getThumb = (env, ref) => fetchPublicImage(ref, "w600");
-export const getFull = (env, ref) => fetchPublicImage(ref, "w2200");
+export const getThumb = (env, ref) => fetchPublicImage(ref, 600);
+export const getFull = (env, ref) => fetchPublicImage(ref, 2200);
 
 /** Open a file for download (optionally ranged). Deliberately the API v3
  * alt=media endpoint, not drive.google.com/uc?export=download: past a few MB

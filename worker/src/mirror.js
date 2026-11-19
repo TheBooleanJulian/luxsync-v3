@@ -3,7 +3,7 @@
 // source tolerates; visitors are then served from R2 and never wait on (or use
 // up) Google Drive's burst throttling and per-file download limits. Files that
 // were never prepared still fall back to the source, as before.
-import { HttpError, LuxError, describe, guessType } from "./util.js";
+import { HttpError, LuxError, describe, guessType, isVideo } from "./util.js";
 
 // One R2 put takes up to ~5 GiB; anything bigger keeps streaming from the source.
 // (Cameras split recordings at 4 GB, so this is rare.)
@@ -110,9 +110,10 @@ export async function prepareFile(env, provider, providerName, { ref, name, vide
   return result;
 }
 
-/** POST /api/admin/prepare {provider, id, name, video}. Streams NDJSON:
+/** POST /api/admin/prepare {provider, source, id, name}. Streams NDJSON:
  * {"bytes":n,"total":n} progress lines (so a multi-GB copy keeps the connection
- * alive), then {"done":true,"parts":{...}}. */
+ * alive), then {"done":true,"parts":{...}}. A fully mirrored file is recorded
+ * against its gallery (file.source) so the cron runner skips it. */
 export function prepareResponse(env, ctx, provider, providerName, file) {
   const { readable, writable } = new TransformStream();
   const writer = writable.getWriter();
@@ -125,9 +126,134 @@ export function prepareResponse(env, ctx, provider, providerName, file) {
     send({ bytes, total });
   };
   const work = prepareFile(env, provider, providerName, file, onBytes)
-    .then((parts) => send({ done: true, parts }))
+    .then(async (parts) => {
+      if (file.source && isReady(parts)) await markDone(env, providerName, file.source, file.ref).catch(() => {});
+      return send({ done: true, parts });
+    })
     .catch((err) => send({ done: true, error: err instanceof HttpError ? err.detail : String(err) }))
     .finally(() => writer.close().catch(() => {}));
   ctx.waitUntil(work);
   return new Response(readable, { headers: { "Content-Type": "application/x-ndjson", "Cache-Control": "no-store" } });
+}
+
+// ---------- automatic mirroring (Cron Trigger) ----------
+// Every gallery a visitor opens is registered. A cron run every 5 minutes
+// mirrors whatever is missing, picks up files uploaded later, and keeps
+// retrying failures (e.g. once Google lifts a per-file download block), so a
+// gallery converges to fully mirrored without anyone pressing Prepare.
+// Additive tables, created on first use (also in schema.sql).
+const SCHEMA = [
+  `CREATE TABLE IF NOT EXISTS mirror_galleries (
+     provider TEXT NOT NULL, source TEXT NOT NULL, name TEXT NOT NULL DEFAULT '',
+     added_at TEXT NOT NULL, next_check TEXT NOT NULL, last_run TEXT,
+     files INTEGER NOT NULL DEFAULT 0, ready INTEGER NOT NULL DEFAULT 0, failed INTEGER NOT NULL DEFAULT 0,
+     last_error TEXT, paused INTEGER NOT NULL DEFAULT 0,
+     PRIMARY KEY (provider, source))`,
+  `CREATE TABLE IF NOT EXISTS mirror_files (
+     provider TEXT NOT NULL, source TEXT NOT NULL, ref TEXT NOT NULL, done_at TEXT NOT NULL,
+     PRIMARY KEY (provider, source, ref))`,
+];
+// Per-DB flag, not a shared promise: awaiting another request's pending I/O can hang.
+const schemaDone = new WeakSet();
+export async function ensureSchema(env) {
+  if (schemaDone.has(env.DB)) return;
+  await env.DB.batch(SCHEMA.map((sql) => env.DB.prepare(sql)));
+  schemaDone.add(env.DB);
+}
+
+const iso = (ms = Date.now()) => new Date(ms).toISOString();
+const MINUTE = 60_000;
+const OK_PARTS = ["cached", "copied", "too-large"];
+export const isReady = (parts) => Object.values(parts).every((v) => OK_PARTS.includes(v));
+
+/** Called when a gallery is opened: register it, and have the next cron run
+ * re-check it (new uploads). Never throws — must not break the gallery. */
+export async function registerGallery(env, providerName, source, name) {
+  try {
+    await ensureSchema(env);
+    const now = iso();
+    await env.DB.prepare(
+      "INSERT INTO mirror_galleries (provider, source, name, added_at, next_check) VALUES (?,?,?,?,?)" +
+        " ON CONFLICT(provider, source) DO UPDATE SET name = excluded.name," +
+        " next_check = MIN(mirror_galleries.next_check, excluded.next_check)",
+    ).bind(providerName, source, String(name || "").slice(0, 200), now, now).run();
+  } catch (err) {
+    console.error("registerGallery failed", err);
+  }
+}
+
+export async function markDone(env, providerName, source, ref) {
+  await ensureSchema(env);
+  await env.DB.prepare("INSERT OR IGNORE INTO mirror_files (provider, source, ref, done_at) VALUES (?,?,?,?)")
+    .bind(providerName, source, ref, iso()).run();
+}
+
+const GALLERY_FIELDS = new Set(["next_check", "last_run", "files", "ready", "failed", "last_error", "paused"]);
+async function setGallery(env, g, fields) {
+  const keys = Object.keys(fields).filter((k) => GALLERY_FIELDS.has(k));
+  await env.DB.prepare(`UPDATE mirror_galleries SET ${keys.map((k) => `${k} = ?`).join(", ")} WHERE provider = ? AND source = ?`)
+    .bind(...keys.map((k) => fields[k]), g.provider, g.source).run();
+}
+
+export async function listMirrors(env) {
+  await ensureSchema(env);
+  const { results } = await env.DB.prepare("SELECT * FROM mirror_galleries ORDER BY added_at DESC").all();
+  return results;
+}
+
+export async function setPaused(env, providerName, source, paused) {
+  await ensureSchema(env);
+  await setGallery(env, { provider: providerName, source }, { paused: paused ? 1 : 0, next_check: iso() });
+}
+
+/** One cron run. Galleries are leased (next_check pushed out) while being
+ * worked on, so an overlapping run skips them. maxFiles keeps one run well
+ * under the per-invocation subrequest limit (~10-20 per file worst case). */
+export async function runMirror(env, providers, { budgetMs = 4 * MINUTE, maxFiles = 50 } = {}) {
+  await ensureSchema(env);
+  const stopAt = Date.now() + budgetMs;
+  let left = maxFiles;
+  const { results: due } = await env.DB.prepare(
+    "SELECT provider, source FROM mirror_galleries WHERE paused = 0 AND next_check <= ? ORDER BY next_check LIMIT 20",
+  ).bind(iso()).all();
+
+  for (const g of due) {
+    if (Date.now() >= stopAt || left <= 0) break;
+    const provider = providers[g.provider];
+    if (!provider) continue;
+    await setGallery(env, g, { next_check: iso(Date.now() + 15 * MINUTE) });
+
+    let files;
+    try {
+      ({ files } = await provider.listGallery(env, g.source));
+    } catch (err) {
+      const d = describe(err, `mirror list ${g.provider}/${g.source}`);
+      await setGallery(env, g, { last_run: iso(), last_error: d.code, next_check: iso(Date.now() + 60 * MINUTE) });
+      continue;
+    }
+    const { results } = await env.DB.prepare("SELECT ref FROM mirror_files WHERE provider = ? AND source = ?")
+      .bind(g.provider, g.source).all();
+    const done = new Set(results.map((r) => r.ref));
+    let ready = files.filter((f) => done.has(f.id)).length;
+    let failed = 0, complete = true, lastError = null;
+
+    for (const f of files) {
+      if (done.has(f.id)) continue;
+      if (Date.now() >= stopAt || left <= 0) { complete = false; break; }
+      left--;
+      const name = f.name || f.id;
+      const parts = await prepareFile(env, provider, g.provider, { ref: f.id, name, video: isVideo(name) });
+      if (isReady(parts)) {
+        await markDone(env, g.provider, g.source, f.id);
+        ready++;
+      } else {
+        failed++;
+        lastError = Object.values(parts).find((v) => !OK_PARTS.includes(v))?.code || "LS-PREP-FAIL";
+      }
+    }
+    // Unfinished: continue next run. Failures: retry in 30 min. Done: re-check
+    // daily (and right away whenever someone opens the gallery).
+    const next = !complete ? Date.now() : failed ? Date.now() + 30 * MINUTE : Date.now() + 24 * 60 * MINUTE;
+    await setGallery(env, g, { last_run: iso(), files: files.length, ready, failed, last_error: lastError, next_check: iso(next) });
+  }
 }

@@ -6,7 +6,7 @@
 
 **A premium, dependency-free photo gallery that turns any public Google Drive or Dropbox folder into a scrollable, previewable, downloadable client gallery.**
 
-![Version](https://img.shields.io/badge/version-0.13.1-00E5FF)
+![Version](https://img.shields.io/badge/version-0.14.0-00E5FF)
 ![Python](https://img.shields.io/badge/-Python-3776AB?logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/-FastAPI-009688?logo=fastapi&logoColor=white)
 ![Zeabur](https://img.shields.io/badge/-Zeabur-6C5CE7)
@@ -161,7 +161,12 @@ Local dev: put secrets in `worker/.dev.vars` (git-ignored), `npm run dev`. Tests
 
 Differences from the Python app to know about: Drive request pacing is per Worker isolate rather than global; zip progress is best-effort per data centre; the `CDN_BASE_URL` redirect is gone (the Worker serves R2 directly with long browser caching). Cutover (custom domain route in `wrangler.jsonc`, DNS) is a separate, explicit step.
 
-**Prepare gallery (Worker only).** Google Drive throttles bursts and caps how often a public file can be downloaded per day, so a gallery shared to a group can lock clients out of its videos. In `/admin`, paste the gallery link into *Prepare gallery* after uploading and before sharing. It copies every thumbnail, preview and original into R2 (`<provider>/{thumb,full,orig}/<file id>`, see `worker/src/mirror.js`), two files at a time, skipping anything already copied. Previews, single downloads (resumable, with Range) and zips are then served from R2. The `X-LuxSync-Source: r2|source` response header shows which was used. Unprepared files still come from the source, and videos only get mirrored on play if they're under 64 MB. Files over 4.9 GB (one R2 put) always stream from the source. Mirrored files are kept with no expiry, so R2 storage grows with every prepared gallery (~$0.015/GB-month beyond the free 10 GB).
+**R2 mirror (Worker only).** Google Drive throttles bursts and caps how often a public file can be downloaded per day, so serving clients live from Drive locks them out of popular files. The Worker therefore copies every gallery into R2 (`<provider>/{thumb,full,orig}/<file id>`, see `worker/src/mirror.js`) and serves previews, single downloads (resumable, with Range) and zips from there; the `X-LuxSync-Source: r2|source` response header shows which was used.
+
+- **Automatic:** opening a gallery registers it (D1 `mirror_galleries`, created on first use). A Cron Trigger every 5 minutes (`triggers` in `worker/wrangler.jsonc`) copies what's missing, up to 50 files per run. It retries failed files every 30 minutes, for example until Google lifts a per-file cap, and re-checks a finished gallery daily and whenever it's opened, so files uploaded later get picked up too.
+- **Right now:** `/admin` → *Prepare gallery* copies a gallery immediately from your browser (two files at a time, with progress), for when you want it fully mirrored before sharing the link. The table below it lists every mirrored gallery with its status and a Pause/Resume switch.
+- Thumbnails and previews come from Google's image CDN (`lh3.googleusercontent.com`), with `drive.google.com/thumbnail` as fallback. Until a thumbnail is mirrored, the gallery page keeps the tile's shape and retries for about 3 minutes.
+- Unmirrored files still come from the source. Files over 4.9 GB (one R2 put) always do. Mirrored files have no expiry, so storage grows with every gallery (~$0.015/GB-month beyond the free 10 GB). Anyone who opens a public folder in LuxSync enrols it, so pause any you don't want kept.
 
 ## Screenshots
 
@@ -258,7 +263,7 @@ is also written to the server log next to the details, so search Zeabur's logs f
 | Code | Meaning | What to do |
 |---|---|---|
 | `LS-DRV-RATE` | Google Drive throttled the request and the retries ran out | Ask them to wait a minute and retry; if it recurs raise `DRIVE_MIN_INTERVAL_MS` |
-| `LS-DRV-FILE` | Google's per-file download cap for that file | Retry in a few hours; the real fix is caching originals |
+| `LS-DRV-FILE` | Google's per-file download cap for that file | Only happens for files not yet mirrored to R2; the background mirror retries every 30 min until Google lifts the cap |
 | `LS-DRV-GONE` | File deleted, moved, or no longer shared "Anyone with the link" | Check sharing in Drive |
 | `LS-DRV-CFG` | `DRIVE_API_KEY` missing on the server | Fix the env var |
 | `LS-NET-CUT` | Transfer from the source (or to the browser) dropped partway | Retry |
@@ -267,6 +272,7 @@ is also written to the server log next to the details, so search Zeabur's logs f
 | `LS-ZIP-FAIL` | A zip was interrupted (video failed mid-stream, or the connection closed) | Retry |
 | `LS-JOB-LOST` | Server never confirmed the zip (rejected, or restarted mid-download) | Retry |
 | `LS-LIMIT` | Our own per-IP rate limit (slowapi) | Wait a minute |
+| `LS-PREP-FAIL` | Copying a file into R2 failed partway (admin Prepare / background mirror only) | Retried automatically |
 | `LS-HTTP-<n>` | Any other HTTP error, `<n>` is the status | Check logs |
 
 A photo that can't be fetched during a zip is skipped instead of aborting the zip: the zip stays valid, the panel
@@ -276,6 +282,7 @@ lists the failed files, and a `_MISSING_FILES.txt` inside the zip names them wit
 
 Summarised from commit history, most recent first. Versions follow `0.MINOR.PATCH` — MINOR for new features/architecture changes, PATCH for fixes.
 
+- **v0.14.0 — 2026-11-19 (R2 mirror)** — Galleries are copied into R2 and served from there, so clients no longer hit Google Drive's burst throttling (blank thumbnails) or per-file download caps (`LS-DRV-FILE` on popular videos). There's a background Cron Trigger mirror for every opened gallery, plus *Prepare gallery* in `/admin` with a mirrored-galleries table. Thumbnails now come from Google's image CDN first. Removed a shared thumbnail queue that leaked slots when browsers cancelled image loads, which hung later thumbnails (Cloudflare error 1101). Single video downloads are resumable (Range/If-Range, logged once). Tiles keep their shape while a thumbnail retries. `.lrf`/`.lrv` proxies are treated as video.
 - **v0.13.1 — 2026-11-16 (Unified UI brand assets)** — Raster assets redone in the Unified UI palette: favicon/logo mark (arrows recoloured with the signal gradient, stray edge line removed), home-screen icon, full logo, link-preview card and README banner (v4; v1–v3 kept). Sources and how to re-render them: `assets/source/`. Image URLs in the page head carry `?v=2` so cached gold previews refresh.
 - **v0.13.0 — 2026-11-16 (Julian Unified UI)** — Gallery and `/admin` restyled from the legacy teal/gold palette to the Julian Unified UI design system: Chakra Petch / IBM Plex Sans / JetBrains Mono, cyan for actions, magenta for the one "special" element per region, signal-gradient brand mark, header hairline and progress bars, bracketed setup panel. New light mode plus a Light/Dark toggle. The LuxSync logo mark is recoloured in CSS (the PNG is used as a mask), so no image assets changed. The film-strip sprockets, grain overlay and looping toast animation are gone (the system allows no decorative loops). The email gate, download panel and errors keep their behaviour; errors now carry an "x" glyph so they don't rely on colour alone.
 - **v0.12.0 — 2026-11-16 (folder view)** — New Folder View mode for galleries with subfolders (see Features). Every provider now returns a `folder` list per file (subfolder names from the gallery root), in both the Worker and the Python app; cached listings without it show as root-level until the folder cache expires. The header logo now links to the LuxSync home page.

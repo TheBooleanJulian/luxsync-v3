@@ -100,3 +100,106 @@ test("openSource serves the R2 copy (with ranges) and falls back to the source",
   assert.equal(await part.text(), "456789");
   assert.equal(p.calls.download, 2, "only the miss and the copy hit the source");
 });
+
+// ---------- background runner ----------
+import { DatabaseSync } from "node:sqlite";
+import { listMirrors, registerGallery, runMirror, setPaused } from "../src/mirror.js";
+
+/** Just enough of the D1 binding (prepare/bind/run/all/first/batch) over node:sqlite. */
+function fakeD1() {
+  const db = new DatabaseSync(":memory:");
+  const stmt = (sql, args = []) => ({
+    bind: (...a) => stmt(sql, a),
+    async run() { db.prepare(sql).run(...args); return { success: true }; },
+    async all() { return { results: db.prepare(sql).all(...args) }; },
+    async first() { return db.prepare(sql).get(...args) ?? null; },
+  });
+  return { prepare: (sql) => stmt(sql), async batch(list) { for (const s of list) await s.run(); }, raw: db };
+}
+
+function galleryProvider(files, { failRefs = new Set() } = {}) {
+  const p = fakeProvider();
+  p.listGallery = async () => ({ name: "Shoot", files });
+  const base = p.openDownload;
+  p.openDownload = async (env, ref, range) => {
+    if (failRefs.has(ref)) throw new LuxError(503, "LS-DRV-FILE", "blocked");
+    return base(env, ref, range);
+  };
+  return p;
+}
+
+const due = (env) => env.DB.raw.prepare("UPDATE mirror_galleries SET next_check = '2000-01-01T00:00:00.000Z'").run();
+
+test("runMirror mirrors an opened gallery, then leaves it alone", async () => {
+  const env = { CACHE: fakeR2(), DB: fakeD1() };
+  const files = [{ id: "photo123456", name: "a.jpg" }, { id: "video123456", name: "b.MP4" }];
+  const p = galleryProvider(files);
+  await registerGallery(env, "drive", "folder1234", "Shoot");
+  await runMirror(env, { drive: p });
+
+  const [g] = await listMirrors(env);
+  assert.equal(g.files, 2);
+  assert.equal(g.ready, 2);
+  assert.equal(g.failed, 0);
+  assert.ok(g.next_check > new Date(Date.now() + 23 * 3600e3).toISOString(), "complete -> re-check in a day");
+  assert.equal(env.CACHE.store.has("drive/full/video123456"), false, "no full preview for videos");
+
+  await due(env);
+  const before = { ...p.calls };
+  await runMirror(env, { drive: p });
+  assert.deepEqual(p.calls, before, "done files are skipped without touching the source or R2 copies");
+});
+
+test("runMirror retries failures later and finishes once the source recovers", async () => {
+  const env = { CACHE: fakeR2(), DB: fakeD1() };
+  const files = [{ id: "okay123456", name: "a.jpg" }, { id: "blocked1234", name: "b.MP4" }];
+  const failRefs = new Set(["blocked1234"]);
+  const p = galleryProvider(files, { failRefs });
+  await registerGallery(env, "drive", "folder1234", "Shoot");
+  await runMirror(env, { drive: p });
+
+  let [g] = await listMirrors(env);
+  assert.equal(g.ready, 1);
+  assert.equal(g.failed, 1);
+  assert.equal(g.last_error, "LS-DRV-FILE");
+  const in30 = Date.now() + 30 * 60e3;
+  assert.ok(Math.abs(Date.parse(g.next_check) - in30) < 60e3, "failure -> retry in 30 min");
+
+  failRefs.clear();
+  await due(env);
+  await runMirror(env, { drive: p });
+  [g] = await listMirrors(env);
+  assert.equal(g.ready, 2);
+  assert.equal(g.failed, 0);
+});
+
+test("runMirror stops at its per-run file budget and continues next run", async () => {
+  const env = { CACHE: fakeR2(), DB: fakeD1() };
+  const files = Array.from({ length: 5 }, (_, i) => ({ id: `photo00000${i}`, name: `${i}.jpg` }));
+  const p = galleryProvider(files);
+  await registerGallery(env, "drive", "folder1234", "Shoot");
+  await runMirror(env, { drive: p }, { maxFiles: 3 });
+  let [g] = await listMirrors(env);
+  assert.equal(g.ready, 3);
+  assert.ok(g.next_check <= new Date().toISOString(), "unfinished -> due again immediately");
+  await runMirror(env, { drive: p }, { maxFiles: 3 });
+  [g] = await listMirrors(env);
+  assert.equal(g.ready, 5);
+});
+
+test("paused galleries are skipped; opening a gallery pulls its next check forward", async () => {
+  const env = { CACHE: fakeR2(), DB: fakeD1() };
+  const p = galleryProvider([{ id: "photo123456", name: "a.jpg" }]);
+  await registerGallery(env, "drive", "folder1234", "Shoot");
+  await setPaused(env, "drive", "folder1234", true);
+  await runMirror(env, { drive: p });
+  assert.equal(p.calls.download, 0);
+
+  await setPaused(env, "drive", "folder1234", false);
+  await runMirror(env, { drive: p });
+  env.DB.raw.prepare("UPDATE mirror_galleries SET next_check = '2999-01-01T00:00:00.000Z'").run();
+  await registerGallery(env, "drive", "folder1234", "Shoot (renamed)");
+  const [g] = await listMirrors(env);
+  assert.equal(g.name, "Shoot (renamed)");
+  assert.ok(g.next_check <= new Date().toISOString());
+});

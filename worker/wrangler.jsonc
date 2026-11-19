@@ -45,6 +45,10 @@
     { "name": "RL_ADMIN", "namespace_id": "7108", "simple": { "limit": 60, "period": 60 } }
   ],
 
+  // Background mirroring: every 5 minutes, copy whatever is missing from opened
+  // galleries into R2 (src/mirror.js runMirror). Tables are created on first use.
+  "triggers": { "crons": ["*/5 * * * *"] },
+
   // Plain-text vars. Secrets (DRIVE_API_KEY, ADMIN_PASSWORD, ADMIN_USERNAME,
   // IP_HASH_SALT, DROPBOX_*) are set with `npx wrangler secret put NAME`.
   "vars": { "FOLDER_CACHE_TTL_SECONDS": "600" },
