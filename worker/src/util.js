@@ -9,6 +9,7 @@ const MESSAGES = {
   "LS-DRV-CFG": "The server is not set up to talk to Google Drive.",
   "LS-NET-CUT": "The connection to the source dropped mid-download.",
   "LS-SRC-EMPTY": "The source returned an empty file.",
+  "LS-PREP-RANGE": "The source didn't return the requested part of a file while it was being copied.",
   "LS-ZIP-FAIL": "The zip was interrupted before it finished.",
 };
 

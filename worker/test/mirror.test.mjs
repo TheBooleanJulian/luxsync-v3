@@ -6,9 +6,10 @@ import { openSource, origKey, parseRange, prepareFile } from "../src/mirror.js";
 // Workers-only global: a pass-through stream with a declared length.
 globalThis.FixedLengthStream ??= class extends TransformStream { constructor() { super(); } };
 
-/** In-memory stand-in for the R2 binding (head / get with range / put). */
+/** In-memory stand-in for the R2 binding (head / get with range / put / multipart). */
 function fakeR2() {
   const store = new Map();
+  const uploads = new Map();
   return {
     store,
     async head(key) {
@@ -26,17 +27,50 @@ function fakeR2() {
       const bytes = new Uint8Array(await new Response(value).arrayBuffer());
       store.set(key, { bytes, meta: opts?.httpMetadata });
     },
+    uploads,
+    async createMultipartUpload(key, opts) {
+      const id = `upload${uploads.size + 1}`;
+      uploads.set(id, { key, meta: opts?.httpMetadata, parts: new Map() });
+      return this.resumeMultipartUpload(key, id);
+    },
+    resumeMultipartUpload(key, id) {
+      return {
+        uploadId: id,
+        async uploadPart(n, value) {
+          const u = uploads.get(id);
+          if (!u) throw new Error("uploadPart: The specified multipart upload does not exist. (10024)");
+          u.parts.set(n, new Uint8Array(await new Response(value).arrayBuffer()));
+          return { partNumber: n, etag: `etag${n}` };
+        },
+        async complete(parts) {
+          const u = uploads.get(id);
+          const chunks = parts.map((p) => u.parts.get(p.partNumber));
+          const bytes = new Uint8Array(chunks.reduce((n, c) => n + c.length, 0));
+          let o = 0;
+          for (const c of chunks) { bytes.set(c, o); o += c.length; }
+          store.set(u.key, { bytes, meta: u.meta });
+          uploads.delete(id);
+        },
+      };
+    },
   };
 }
 
 const ORIGINAL = new TextEncoder().encode("0123456789");
 
-function fakeProvider({ thumbFails = false } = {}) {
-  const calls = { download: 0, thumb: 0, full: 0 };
+function fakeProvider({ thumbFails = false, delayMs = 0 } = {}) {
+  const calls = { download: 0, thumb: 0, full: 0, ranges: [] };
   return {
     calls,
     async openDownload(env, ref, range) {
       calls.download++;
+      if (delayMs) await new Promise((r) => setTimeout(r, delayMs));
+      const m = /^bytes=(\d+)-(\d+)$/.exec(range || "");
+      if (m) {
+        calls.ranges.push(range);
+        const part = ORIGINAL.slice(Number(m[1]), Number(m[2]) + 1);
+        return new Response(part, { status: 206, headers: { "content-length": String(part.length) } });
+      }
       return new Response(ORIGINAL, { headers: { "content-length": String(ORIGINAL.length) } });
     },
     async getThumb() {
@@ -60,7 +94,7 @@ test("parseRange", () => {
 });
 
 test("prepareFile copies every part of a photo, then reports them cached", async () => {
-  const env = { CACHE: fakeR2() };
+  const env = { CACHE: fakeR2(), DB: fakeD1() };
   const p = fakeProvider();
   const file = { ref: "abc1234567", name: "a.jpg", video: false };
   assert.deepEqual(await prepareFile(env, p, "drive", file), { thumb: "copied", full: "copied", orig: "copied" });
@@ -68,11 +102,11 @@ test("prepareFile copies every part of a photo, then reports them cached", async
   assert.equal(env.CACHE.store.get(origKey("drive", "abc1234567")).meta.contentType, "image/jpeg");
 
   assert.deepEqual(await prepareFile(env, p, "drive", file), { thumb: "cached", full: "cached", orig: "cached" });
-  assert.deepEqual(p.calls, { download: 1, thumb: 1, full: 1 }, "a second run must not touch the source");
+  assert.deepEqual(p.calls, { download: 1, thumb: 1, full: 1, ranges: [] }, "a second run must not touch the source");
 });
 
 test("prepareFile skips the full preview for videos and reports failures without throwing", async () => {
-  const env = { CACHE: fakeR2() };
+  const env = { CACHE: fakeR2(), DB: fakeD1() };
   const result = await prepareFile(env, fakeProvider({ thumbFails: true }), "drive", { ref: "vid1234567", name: "c.MP4", video: true });
   assert.equal(result.thumb.code, "LS-DRV-RATE");
   assert.equal(result.orig, "copied");
@@ -80,7 +114,7 @@ test("prepareFile skips the full preview for videos and reports failures without
 });
 
 test("openSource serves the R2 copy (with ranges) and falls back to the source", async () => {
-  const env = { CACHE: fakeR2() };
+  const env = { CACHE: fakeR2(), DB: fakeD1() };
   const p = fakeProvider();
 
   const miss = await openSource(env, p, "drive", "abc1234567");
@@ -202,4 +236,53 @@ test("paused galleries are skipped; opening a gallery pulls its next check forwa
   const [g] = await listMirrors(env);
   assert.equal(g.name, "Shoot (renamed)");
   assert.ok(g.next_check <= new Date().toISOString());
+});
+
+// ---------- big files: resumable multipart copy ----------
+test("a big original is copied in parts and resumes after stopping", async () => {
+  const env = { CACHE: fakeR2(), DB: fakeD1(), MIRROR_PART_BYTES: "4" };   // 10 bytes -> 3 parts
+  const p = fakeProvider();
+  const file = { ref: "big1234567", name: "long.MOV", video: true };
+
+  const first = await prepareFile(env, p, "drive", file, null, { stopAt: Date.now() - 1 });
+  assert.equal(first.orig, "partial", "past stopAt it still finishes one part, then stops");
+  assert.deepEqual(p.calls.ranges, ["bytes=0-3"]);
+  const row = env.DB.raw.prepare("SELECT parts FROM mirror_uploads").get();
+  assert.equal(JSON.parse(row.parts).length, 1);
+
+  const second = await prepareFile(env, p, "drive", file);
+  assert.equal(second.orig, "copied");
+  assert.deepEqual(p.calls.ranges, ["bytes=0-3", "bytes=4-7", "bytes=8-9"], "resumed at part 2, not from zero");
+  assert.deepEqual(env.CACHE.store.get(origKey("drive", "big1234567")).bytes, ORIGINAL);
+  assert.equal(env.CACHE.store.get(origKey("drive", "big1234567")).meta.contentType, "video/quicktime");
+  assert.equal(env.DB.raw.prepare("SELECT COUNT(*) AS n FROM mirror_uploads").get().n, 0, "upload state cleared");
+});
+
+test("an upload R2 has forgotten is restarted from zero", async () => {
+  const env = { CACHE: fakeR2(), DB: fakeD1(), MIRROR_PART_BYTES: "4" };
+  const p = fakeProvider();
+  const file = { ref: "big1234567", name: "long.MOV", video: true };
+  await prepareFile(env, p, "drive", file, null, { stopAt: Date.now() - 1 });
+  env.CACHE.uploads.clear();                                   // e.g. aborted after 7 days
+
+  const failed = await prepareFile(env, p, "drive", file);
+  assert.equal(typeof failed.orig, "object");
+  assert.equal(env.DB.raw.prepare("SELECT COUNT(*) AS n FROM mirror_uploads").get().n, 0);
+  assert.equal((await prepareFile(env, p, "drive", file)).orig, "copied");
+  assert.deepEqual(env.CACHE.store.get(origKey("drive", "big1234567")).bytes, ORIGINAL);
+});
+
+test("runMirror treats a stopped big copy as unfinished, not failed", async () => {
+  const env = { CACHE: fakeR2(), DB: fakeD1(), MIRROR_PART_BYTES: "4" };
+  const p = galleryProvider([{ id: "big1234567", name: "long.MOV" }]);
+  const slow = p.openDownload;
+  p.openDownload = async (...a) => { await new Promise((r) => setTimeout(r, 100)); return slow(...a); };
+  await registerGallery(env, "drive", "folder1234", "Shoot");
+  await runMirror(env, { drive: p }, { budgetMs: 50 });
+  const [g] = await listMirrors(env);
+  assert.equal(g.ready, 0);
+  assert.equal(g.failed, 0);
+  assert.ok(g.next_check <= new Date().toISOString(), "due again on the next run");
+  for (let i = 0; i < 5 && (await listMirrors(env))[0].ready === 0; i++) await runMirror(env, { drive: p }, { budgetMs: 50 });
+  assert.equal((await listMirrors(env))[0].ready, 1, "finishes over a few runs");
 });

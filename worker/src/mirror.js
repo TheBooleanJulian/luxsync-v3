@@ -5,9 +5,12 @@
 // were never prepared still fall back to the source, as before.
 import { HttpError, LuxError, describe, guessType, isVideo } from "./util.js";
 
-// One R2 put takes up to ~5 GiB; anything bigger keeps streaming from the source.
-// (Cameras split recordings at 4 GB, so this is rare.)
-export const MAX_MIRROR_BYTES = 4.9 * 1024 ** 3;
+// Files bigger than one part are copied with an R2 multipart upload: one ranged
+// download per part, each finished part recorded in D1 (mirror_uploads). A copy
+// that outlives its cron run, or is cut off, resumes from the last finished part
+// instead of restarting a multi-GB file from zero (a single 3.4 GB clip once
+// stalled a whole gallery that way). env.MIRROR_PART_BYTES overrides it (tests).
+export const PART_BYTES = 256 * 1024 ** 2;
 
 export const origKey = (providerName, ref) => `${providerName}/orig/${ref}`;
 export const imageKey = (providerName, kind, ref) => `${providerName}/${kind}/${ref}`;
@@ -52,41 +55,103 @@ export async function openSource(env, provider, providerName, ref, range = null)
   return new Response(res.body, { status: res.status, headers });
 }
 
-/** Stream a provider download into R2 without buffering it (FixedLengthStream
- * gives R2 the length up front). A cut transfer fails the put, so no partial
- * object is ever stored. Returns "copied" or "too-large". */
-async function copyOriginal(env, provider, providerName, ref, name, onBytes) {
-  const res = await provider.openDownload(env, ref);
-  const length = Number(res.headers.get("content-length")) || 0;
-  if (!length) {
-    await res.body?.cancel();
-    throw new LuxError(502, "LS-SRC-EMPTY", `file=${ref} (no length)`);
+/** Pipe `body` (exactly `length` bytes) into `sink` without buffering it:
+ * FixedLengthStream gives R2 the length up front, and a cut transfer fails the
+ * write, so a short object or part is never stored. */
+async function pipeInto(body, length, sink, onBytes, offset, total) {
+  let src = body;
+  if (onBytes) {
+    let received = offset;
+    src = body.pipeThrough(new TransformStream({
+      transform(chunk, ctl) {
+        received += chunk.byteLength;
+        onBytes(received, total);
+        ctl.enqueue(chunk);
+      },
+    }));
   }
-  if (length > MAX_MIRROR_BYTES) {
-    await res.body.cancel();
-    return "too-large";
-  }
-  let received = 0;
-  const counter = new TransformStream({
-    transform(chunk, ctl) {
-      received += chunk.byteLength;
-      onBytes(received, length);
-      ctl.enqueue(chunk);
-    },
-  });
   const fixed = new FixedLengthStream(length);
-  const contentType = guessType(name) || res.headers.get("content-type") || "application/octet-stream";
-  await Promise.all([
-    res.body.pipeThrough(counter).pipeTo(fixed.writable),
-    env.CACHE.put(origKey(providerName, ref), fixed.readable, { httpMetadata: { contentType } }),
-  ]);
+  const [, out] = await Promise.all([src.pipeTo(fixed.writable), sink(fixed.readable)]);
+  return out;
+}
+
+async function getUpload(env, providerName, ref) {
+  await ensureSchema(env);
+  const row = await env.DB.prepare("SELECT upload_id, size, parts FROM mirror_uploads WHERE provider = ? AND ref = ?")
+    .bind(providerName, ref).first();
+  return row ? { ...row, parts: JSON.parse(row.parts) } : null;
+}
+
+async function saveUpload(env, providerName, ref, u) {
+  await env.DB.prepare(
+    "INSERT INTO mirror_uploads (provider, ref, upload_id, size, parts, updated_at) VALUES (?,?,?,?,?,?)" +
+      " ON CONFLICT(provider, ref) DO UPDATE SET upload_id = excluded.upload_id, size = excluded.size," +
+      " parts = excluded.parts, updated_at = excluded.updated_at",
+  ).bind(providerName, ref, u.upload_id, u.size, JSON.stringify(u.parts), iso()).run();
+}
+
+const dropUpload = (env, providerName, ref) =>
+  env.DB.prepare("DELETE FROM mirror_uploads WHERE provider = ? AND ref = ?").bind(providerName, ref).run();
+
+/** Copy a file's original bytes into R2. Returns "copied", or "partial" when
+ * `stopAt` passed with parts still to go (progress is saved; call again). */
+async function copyOriginal(env, provider, providerName, ref, name, { onBytes, stopAt } = {}) {
+  const key = origKey(providerName, ref);
+  const partBytes = Number(env.MIRROR_PART_BYTES) || PART_BYTES;
+  let upload = await getUpload(env, providerName, ref);
+
+  if (!upload) {
+    const res = await provider.openDownload(env, ref);
+    const size = Number(res.headers.get("content-length")) || 0;
+    if (!size) {
+      await res.body?.cancel();
+      throw new LuxError(502, "LS-SRC-EMPTY", `file=${ref} (no length)`);
+    }
+    const contentType = guessType(name) || res.headers.get("content-type") || "application/octet-stream";
+    if (size <= partBytes) {
+      await pipeInto(res.body, size, (s) => env.CACHE.put(key, s, { httpMetadata: { contentType } }), onBytes, 0, size);
+      return "copied";
+    }
+    await res.body.cancel();
+    const mpu = await env.CACHE.createMultipartUpload(key, { httpMetadata: { contentType } });
+    upload = { upload_id: mpu.uploadId, size, parts: [] };
+    await saveUpload(env, providerName, ref, upload);
+  }
+
+  const mpu = env.CACHE.resumeMultipartUpload(key, upload.upload_id);
+  const count = Math.ceil(upload.size / partBytes);
+  let doneNow = 0;
+  try {
+    for (let n = upload.parts.length + 1; n <= count; n++) {
+      // Always finish at least one part per call, so every run makes progress.
+      if (stopAt && doneNow > 0 && Date.now() >= stopAt) return "partial";
+      const start = (n - 1) * partBytes;
+      const end = Math.min(upload.size, n * partBytes) - 1;
+      const res = await provider.openDownload(env, ref, `bytes=${start}-${end}`);
+      if (res.status !== 206) {
+        await res.body?.cancel();
+        throw new LuxError(502, "LS-PREP-RANGE", `file=${ref} part=${n} status=${res.status}`);
+      }
+      const part = await pipeInto(res.body, end - start + 1, (s) => mpu.uploadPart(n, s), onBytes, start, upload.size);
+      upload.parts.push({ partNumber: part.partNumber, etag: part.etag });
+      await saveUpload(env, providerName, ref, upload);
+      doneNow++;
+    }
+    await mpu.complete(upload.parts);
+  } catch (err) {
+    // R2 aborts unfinished uploads after a while; a gone upload can't resume, so start over next time.
+    if (/does not exist|NoSuchUpload|10024/i.test(String(err?.message))) await dropUpload(env, providerName, ref);
+    throw err;
+  }
+  await dropUpload(env, providerName, ref);
   return "copied";
 }
 
 /** Mirror one file. Each part is checked first, so re-running Prepare only
  * fetches what's missing. Never throws: returns {part: "cached" | "copied" |
- * "too-large" | {code, message, ref}} for thumb, full (photos only) and orig. */
-export async function prepareFile(env, provider, providerName, { ref, name, video }, onBytes = () => {}) {
+ * "partial" | {code, message, ref}} for thumb, full (photos only) and orig.
+ * "partial" = a big original stopped at `stopAt` with its progress saved. */
+export async function prepareFile(env, provider, providerName, { ref, name, video }, onBytes = null, { stopAt } = {}) {
   const parts = video ? ["thumb", "orig"] : ["thumb", "full", "orig"];
   const result = {};
   for (const part of parts) {
@@ -95,7 +160,7 @@ export async function prepareFile(env, provider, providerName, { ref, name, vide
       if (await env.CACHE.head(key)) {
         result[part] = "cached";
       } else if (part === "orig") {
-        result[part] = await copyOriginal(env, provider, providerName, ref, name, onBytes);
+        result[part] = await copyOriginal(env, provider, providerName, ref, name, { onBytes, stopAt });
       } else {
         const { bytes, contentType } = await (part === "thumb" ? provider.getThumb : provider.getFull)(env, ref);
         await env.CACHE.put(key, bytes, { httpMetadata: { contentType } });
@@ -152,6 +217,10 @@ const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS mirror_files (
      provider TEXT NOT NULL, source TEXT NOT NULL, ref TEXT NOT NULL, done_at TEXT NOT NULL,
      PRIMARY KEY (provider, source, ref))`,
+  `CREATE TABLE IF NOT EXISTS mirror_uploads (
+     provider TEXT NOT NULL, ref TEXT NOT NULL, upload_id TEXT NOT NULL, size INTEGER NOT NULL,
+     parts TEXT NOT NULL, updated_at TEXT NOT NULL,
+     PRIMARY KEY (provider, ref))`,
 ];
 // Per-DB flag, not a shared promise: awaiting another request's pending I/O can hang.
 const schemaDone = new WeakSet();
@@ -163,7 +232,7 @@ export async function ensureSchema(env) {
 
 const iso = (ms = Date.now()) => new Date(ms).toISOString();
 const MINUTE = 60_000;
-const OK_PARTS = ["cached", "copied", "too-large"];
+const OK_PARTS = ["cached", "copied"];
 export const isReady = (parts) => Object.values(parts).every((v) => OK_PARTS.includes(v));
 
 /** Called when a gallery is opened: register it, and have the next cron run
@@ -242,7 +311,8 @@ export async function runMirror(env, providers, { budgetMs = 4 * MINUTE, maxFile
       if (Date.now() >= stopAt || left <= 0) { complete = false; break; }
       left--;
       const name = f.name || f.id;
-      const parts = await prepareFile(env, provider, g.provider, { ref: f.id, name, video: isVideo(name) });
+      const parts = await prepareFile(env, provider, g.provider, { ref: f.id, name, video: isVideo(name) }, null, { stopAt });
+      if (Object.values(parts).includes("partial")) { complete = false; break; }
       if (isReady(parts)) {
         await markDone(env, g.provider, g.source, f.id);
         ready++;

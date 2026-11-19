@@ -425,7 +425,7 @@ td.mono{font-size:11.5px;line-height:16px;font-weight:500;letter-spacing:0.02em;
   });
 
   // ---------- prepare gallery: mirror every file into R2, one request per file ----------
-  const OK_PARTS = ['cached', 'copied', 'too-large'];
+  const OK_PARTS = ['cached', 'copied'];
   let prep = null;   // { gallery, files, failed: [{file, why}], busy }
   const mb = (n)=> (n / 1048576).toLocaleString('en-SG', {maximumFractionDigits: 0});
 
