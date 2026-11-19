@@ -8,7 +8,7 @@
 import * as cache from "./cache.js";
 import * as dl from "./downloads.js";
 import { newJob, readJobs, saveJob } from "./jobs.js";
-import { openSource, origKey, prepareResponse } from "./mirror.js";
+import { listMirrors, openSource, origKey, prepareResponse, registerGallery, runMirror, setPaused } from "./mirror.js";
 import * as drive from "./providers/drive.js";
 import * as dropbox from "./providers/dropbox.js";
 import { generatorToStream, zipStream } from "./zip.js";
@@ -55,7 +55,7 @@ async function limit(env, request, name) {
 }
 
 // ---------- gallery ----------
-async function getGallery(request, env) {
+async function getGallery(request, env, ctx) {
   await limit(env, request, "GALLERY");
   let payload;
   try { payload = await request.json(); } catch { throw new HttpError(422, "Invalid JSON body"); }
@@ -76,11 +76,13 @@ async function getGallery(request, env) {
   const key = `${providerName}/folder-cache/${sourceId}.json`;
   const ttl = Number(env.FOLDER_CACHE_TTL_SECONDS || 600);
   // payload.refresh skips the cached listing (e.g. Drive was still syncing)
-  const cached = payload.refresh ? null : await cache.getJson(env, key, ttl);
-  if (cached) return json({ provider: providerName, source: sourceId, ...cached });
-
-  const result = await provider.listGallery(env, sourceId);
-  await cache.putJson(env, key, result);
+  let result = payload.refresh ? null : await cache.getJson(env, key, ttl);
+  if (!result) {
+    result = await provider.listGallery(env, sourceId);
+    await cache.putJson(env, key, result);
+  }
+  // Opening a gallery enrols it for background mirroring (src/mirror.js).
+  ctx.waitUntil(registerGallery(env, providerName, sourceId, result.name));
   return json({ provider: providerName, source: sourceId, ...result });
 }
 
@@ -337,7 +339,19 @@ async function adminRoutes(request, env, ctx, url) {
     const provider = getProvider(providerName);
     provider.validateRef(body.id);
     const name = String(body.name || "");
-    return prepareResponse(env, ctx, provider, providerName, { ref: body.id, name, video: isVideo(name) });
+    const source = body.source ? String(body.source) : "";
+    if (source) provider.validateRef(source);
+    return prepareResponse(env, ctx, provider, providerName, { ref: body.id, name, video: isVideo(name), source });
+  }
+  if (url.pathname === "/api/admin/mirrors/pause") {
+    // Stop (or resume) background mirroring of one gallery.
+    if (request.method !== "POST") throw new HttpError(405, "Method not allowed");
+    let body;
+    try { body = await request.json(); } catch { throw new HttpError(422, "Invalid JSON body"); }
+    const providerName = body.provider || "drive";
+    getProvider(providerName).validateRef(body.source);
+    await setPaused(env, providerName, body.source, !!body.paused);
+    return json({ ok: true });
   }
   if (request.method !== "GET") throw new HttpError(405, "Method not allowed");
   await limit(env, request, "ADMIN");
@@ -345,6 +359,8 @@ async function adminRoutes(request, env, ctx, url) {
   switch (url.pathname) {
     case "/admin":
       return new Response(adminHtml, { headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" } });
+    case "/api/admin/mirrors":
+      return json(await listMirrors(env), 200, { "Cache-Control": "no-store" });
     case "/api/admin/stats":
       return json(await dl.stats(env));
     case "/api/admin/downloads": {
@@ -385,7 +401,7 @@ async function route(request, env, ctx) {
   let m;
 
   if (path === "/admin" || path.startsWith("/api/admin/")) return adminRoutes(request, env, ctx, url);
-  if (path === "/api/gallery" && method === "POST") return getGallery(request, env);
+  if (path === "/api/gallery" && method === "POST") return getGallery(request, env, ctx);
   if (path === "/api/download-zip" && method === "POST") return downloadZip(request, env, ctx);
   if (path === "/api/download-progress" && method === "GET") {
     await limit(env, request, "PROGRESS");
@@ -416,5 +432,10 @@ export default {
     const out = new Response(res.body, res);
     for (const [k, v] of Object.entries(CORS)) out.headers.set(k, v);
     return out;
+  },
+
+  // Cron Trigger (wrangler.jsonc): background mirroring of opened galleries.
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil(runMirror(env, PROVIDERS).catch((err) => console.error("runMirror failed", err)));
   },
 };

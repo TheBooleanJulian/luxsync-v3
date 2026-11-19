@@ -347,11 +347,14 @@ main{position:relative; z-index:1; max-width:1400px; margin:0 auto; padding:0 cl
 .frame.in{opacity:1; transform:translateY(0);}
 .frame:hover{border-color:var(--line-strong);}
 .frame.selected{border-color:var(--cyan-ink); box-shadow:0 0 0 1px var(--cyan-ink);}
+/* aspect-ratio is set per image from the file's metadata, so a tile keeps the
+   shape the masonry layout reserved while its thumbnail loads or retries. */
 .frame img{
-  width:100%; display:block; background:var(--surface-raised);
+  width:100%; display:block; background:var(--surface-raised); object-fit:cover; color:transparent;
   transition:transform 0.5s var(--ease-out);
 }
 .frame:hover img{transform:scale(1.035);}
+.frame img.waiting{opacity:0;}
 .frame .video-placeholder{width:100%; display:flex; align-items:center; justify-content:center; background:var(--surface-raised);}
 .frame .video-placeholder svg{width:34px; height:34px; stroke:var(--ink-muted);}
 /* Chips over the photo: translucent page colour, so they read in either theme. */
@@ -1113,29 +1116,30 @@ footer .footer-link:hover{text-decoration:underline;}
       media.loading = 'lazy';
       media.src = p.thumb;
       media.alt = p.name;
-      if(p.isVideo){
-        // Thumbnail generation isn't guaranteed for every video codec/
-        // container the source supports — fall back to a generic badge
-        // if the source couldn't produce a frame.
-        media.onerror = ()=>{
-          const placeholder = Object.assign(document.createElement('div'), {
-            className: 'video-placeholder',
-            innerHTML: VIDEO_BADGE_SVG,
-          });
-          placeholder.style.aspectRatio = `1 / ${p.aspect}`;
-          media.replaceWith(placeholder);
-        };
-      } else {
-        // Drive throttles bursts of thumbnail requests (a 60-photo grid is one
-        // burst) and lags on freshly uploaded files, so a failed thumb usually
-        // loads a few seconds later. Retry with backoff instead of staying broken.
-        let tries = 0;
-        media.onerror = ()=>{
-          if(tries >= 4) return;
-          const n = ++tries;
-          setTimeout(()=>{ media.src = `${p.thumb}?retry=${n}`; }, 1500 * 2 ** (n-1) + Math.random()*1000);
-        };
-      }
+      media.style.aspectRatio = `1 / ${p.aspect}`;
+      // A thumbnail that isn't mirrored yet can fail while the source throttles
+      // (and freshly uploaded files lag), but it usually loads a little later.
+      // Keep the tile's shape, hide the broken image, and retry with backoff
+      // (~3 min in all). Videos whose source can't make a frame get a badge.
+      let tries = 0;
+      const maxTries = p.isVideo ? 3 : 10;
+      media.onload = ()=> media.classList.remove('waiting');
+      media.onerror = ()=>{
+        media.classList.add('waiting');
+        if(tries >= maxTries){
+          if(p.isVideo){
+            const placeholder = Object.assign(document.createElement('div'), {
+              className: 'video-placeholder',
+              innerHTML: VIDEO_BADGE_SVG,
+            });
+            placeholder.style.aspectRatio = `1 / ${p.aspect}`;
+            media.replaceWith(placeholder);
+          }
+          return;
+        }
+        const n = ++tries;
+        setTimeout(()=>{ media.src = `${p.thumb}?retry=${n}`; }, Math.min(1500 * 2 ** (n-1), 30000) + Math.random()*1000);
+      };
 
       const tag = document.createElement('div');
       tag.className = 'tag mono';

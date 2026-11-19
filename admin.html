@@ -208,6 +208,10 @@ input[type="search"]:focus,input[type="url"]:focus{border-color:var(--cyan-ink);
 .prep-fails{margin-top:var(--space-3);list-style:none;font:500 11.5px/16px var(--font-mono);color:var(--ink-muted);max-height:200px;overflow:auto;}
 .prep-fails li{padding:2px 0;word-break:break-all;}
 .prep-fails .code{color:var(--danger);}
+.mirrors{margin-top:var(--space-4);background:var(--bg);max-height:360px;overflow:auto;}
+.mirrors .btn{height:var(--control-sm);padding:0 var(--space-2);}
+.badge.ok{color:var(--success);}
+.badge.warn{color:var(--warning);}
 .btn{
   display:inline-flex;align-items:center;justify-content:center;gap:var(--space-2);
   height:var(--control-md);padding:0 var(--space-4);
@@ -272,7 +276,7 @@ td.mono{font-size:11.5px;line-height:16px;font-weight:500;letter-spacing:0.02em;
 
   <section class="panel" aria-labelledby="prepTitle">
     <div class="eyebrow" id="prepTitle">Prepare gallery</div>
-    <p>Run this after uploading, before you share the link. It copies every thumbnail, preview and original into LuxSync's own storage, so clients never hit Google Drive's download limits. Safe to re-run: files already copied are skipped.</p>
+    <p>Every gallery that gets opened is copied into LuxSync's own storage automatically in the background (every 5 minutes, including files added later), so clients never hit Google Drive's limits. Use Prepare to do it right now, before you share the link. Safe to re-run: files already copied are skipped.</p>
     <form class="prep-row" id="prepForm">
       <input type="url" id="prepUrl" required placeholder="Paste the Drive / Dropbox folder link or LuxSync gallery link" aria-label="Gallery link">
       <button class="btn primary" id="prepBtn" type="submit">Prepare</button>
@@ -283,6 +287,7 @@ td.mono{font-size:11.5px;line-height:16px;font-weight:500;letter-spacing:0.02em;
       <div class="prep-status" id="prepStatus"></div>
       <ul class="prep-fails" id="prepFails"></ul>
     </div>
+    <div class="table-wrap mirrors"><table id="mirrors"></table></div>
   </section>
 
   <div class="stats" id="stats"></div>
@@ -427,7 +432,7 @@ td.mono{font-size:11.5px;line-height:16px;font-weight:500;letter-spacing:0.02em;
   async function prepareOne(file, onBytes){
     const res = await fetch('/api/admin/prepare', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({provider: prep.gallery.provider, id: file.id, name: file.name}),
+      body: JSON.stringify({provider: prep.gallery.provider, source: prep.gallery.source, id: file.id, name: file.name}),
     });
     if(!res.ok) throw new Error(`HTTP ${res.status}`);
     // NDJSON: progress lines while a big file copies, then one {done:true} line.
@@ -515,6 +520,45 @@ td.mono{font-size:11.5px;line-height:16px;font-weight:500;letter-spacing:0.02em;
     await Promise.all([lane(), lane()]);
     prep.busy = false;
     show();
+    loadMirrors();
+  }
+
+  // Background-mirrored galleries (cron), newest first.
+  async function loadMirrors(){
+    let rows;
+    try { rows = await api('/api/admin/mirrors'); } catch(e){ return; }
+    const table = $('mirrors');
+    table.replaceChildren(header(['Gallery', 'Mirrored', 'Status', 'Last checked', '']));
+    const tbody = el('tbody');
+    rows.forEach(r=>{
+      const tr = el('tr');
+      const a = el('a', 'gal', r.name || r.source);
+      a.href = `/?provider=${encodeURIComponent(r.provider)}&source=${encodeURIComponent(r.source)}`;
+      a.target = '_blank'; a.rel = 'noopener';
+      let status;
+      if(r.paused) status = el('span', 'badge', 'Paused');
+      else if(!r.last_run) status = el('span', 'badge', 'Queued');
+      else if(r.files && r.ready >= r.files) status = el('span', 'badge ok', 'Ready');
+      else if(r.failed) status = el('span', 'badge warn', `${r.failed} retrying · ${r.last_error || ''}`);
+      else status = el('span', 'badge cyan', 'Copying');
+      const btn = el('button', 'btn', r.paused ? 'Resume' : 'Pause');
+      btn.type = 'button';
+      btn.addEventListener('click', async ()=>{
+        btn.disabled = true;
+        await fetch('/api/admin/mirrors/pause', {method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({provider: r.provider, source: r.source, paused: !r.paused})}).catch(()=>{});
+        loadMirrors();
+      });
+      tr.append(td(a), el('td', 'mono', r.last_run ? `${r.ready} / ${r.files}` : '—'), td(status),
+        el('td', 'mono', r.last_run ? fmtDate(r.last_run) : '—'), td(btn));
+      tbody.append(tr);
+    });
+    table.append(tbody);
+    if(!rows.length){
+      const cap = el('caption');
+      cap.append(el('div', 'empty', 'No galleries opened yet.'));
+      table.append(cap);
+    }
   }
 
   $('prepForm').addEventListener('submit', async (e)=>{
@@ -562,6 +606,8 @@ td.mono{font-size:11.5px;line-height:16px;font-weight:500;letter-spacing:0.02em;
 
   loadStats().catch(e=> showErr(`Failed to load: ${e.message}`));
   load(true);
+  loadMirrors();
+  setInterval(()=>{ if(!document.hidden) loadMirrors(); }, 60000);
 })();
 </script>
 </body>
