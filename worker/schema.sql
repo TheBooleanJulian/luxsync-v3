@@ -27,3 +27,8 @@ CREATE TABLE IF NOT EXISTS mirror_galleries (
 CREATE TABLE IF NOT EXISTS mirror_files (
      provider TEXT NOT NULL, source TEXT NOT NULL, ref TEXT NOT NULL, done_at TEXT NOT NULL,
      PRIMARY KEY (provider, source, ref));
+-- In-progress multipart copies of big originals (one row per file, deleted when done).
+CREATE TABLE IF NOT EXISTS mirror_uploads (
+     provider TEXT NOT NULL, ref TEXT NOT NULL, upload_id TEXT NOT NULL, size INTEGER NOT NULL,
+     parts TEXT NOT NULL, updated_at TEXT NOT NULL,
+     PRIMARY KEY (provider, ref));
