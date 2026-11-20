@@ -540,6 +540,9 @@ footer .footer-link:hover{text-decoration:underline;}
 .dl-card.has-errors .dl-bar i{background:var(--warning);}
 .dl-now{font-size:11.5px; line-height:16px; color:var(--ink-muted); margin-top:var(--space-2); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-height:1.2em;}
 .dl-keep{font-size:13px; color:var(--ink-muted); margin-top:var(--space-2); line-height:18px;}
+.dl-parts{margin-top:var(--space-4); border:1px solid var(--line); border-radius:var(--radius-lg); padding:var(--space-3) var(--space-4); background:var(--surface-raised);}
+.dl-parts[hidden]{display:none;}
+.dl-parts-note{font-size:13px; line-height:18px; color:var(--ink); margin-bottom:var(--space-3);}
 .dl-report{margin-top:var(--space-4); border:1px solid var(--danger); border-radius:var(--radius-lg); padding:var(--space-3) var(--space-4); background:var(--surface-raised);}
 .dl-report[hidden]{display:none;}
 .dl-report-title{font:600 14px/20px var(--font-sans); color:var(--ink); margin-bottom:var(--space-2);}
@@ -722,6 +725,10 @@ footer .footer-link:hover{text-decoration:underline;}
     <div class="dl-bar indeterminate" id="dlOverall"><i></i></div>
     <div class="dl-now mono" id="dlNow"></div>
     <div class="dl-keep" id="dlKeep"></div>
+    <div class="dl-parts" id="dlParts" hidden>
+      <p class="dl-parts-note" id="dlPartsNote"></p>
+      <button type="button" class="btn primary" id="dlNext"></button>
+    </div>
     <div class="dl-report" id="dlReport" hidden>
       <div class="dl-report-title">Something went wrong. Screenshot this box and send it to your photographer.</div>
       <ul class="dl-report-codes" id="dlReportCodes"></ul>
@@ -1224,7 +1231,7 @@ footer .footer-link:hover{text-decoration:underline;}
   const LS_MESSAGES = {
     'LS-NET-OFF': 'Your internet connection dropped during the download.',
     'LS-NET-CUT': 'The download was cut off before it finished.',
-    'LS-JOB-LOST': 'The server never confirmed this download (it may have been rejected or restarted).',
+    'LS-JOB-LOST': 'This zip never started. Your browser may have blocked it as a pop-up, or the server rejected it. Tap Retry above.',
     'LS-LIMIT': 'Too many downloads in a short time. Wait a minute, then try again.',
   };
   const lsError = (code, message, ref)=> ({ code, message: message || LS_MESSAGES[code] || 'Unexpected error.', ref: ref || '' });
@@ -1246,11 +1253,17 @@ footer .footer-link:hover{text-decoration:underline;}
     reportBody: document.getElementById('dlReportBody'), copy: document.getElementById('dlCopy'),
     toggle: document.getElementById('dlToggle'), list: document.getElementById('dlList'),
     close: document.getElementById('dlClose'),
+    parts: document.getElementById('dlParts'), partsNote: document.getElementById('dlPartsNote'),
+    next: document.getElementById('dlNext'),
   };
   const DL_COLLAPSE_ABOVE = 12;   // longer lists start collapsed behind a toggle
   const pageTitle = document.title;
   let dlRows = [];   // { li, track, note, bar, name, status, text, frac, err }
-  let dlJobs = [];   // zip jobs polled from /api/download-progress: { id, rows, born, done }
+  let dlJobs = [];   // zip jobs polled from /api/download-progress: { id, rows, born, done, zip }
+  // Zips waiting for a tap. Mobile browsers let one tap open one new tab, so a
+  // second zip started from a timer is blocked as a pop-up and never reaches the
+  // server. Every zip after the first, and every retry, gets its own button.
+  let dlParts = [];  // { list, v, kind, part, total, parts, rows, retry }
   let dlTimer = null, dlTick = null;
   let dlStart = 0, dlListOpen = null, dlReportKey = '';
   const dlSettled = (r)=> r.status === 'done' || r.status === 'sent' || r.status === 'error' || r.status === 'skipped';
@@ -1266,7 +1279,8 @@ footer .footer-link:hover{text-decoration:underline;}
 
   function dlAddRows(names){
     // A new download after the previous batch finished starts a fresh list.
-    if(dlRows.length && dlRows.every(dlSettled) && !dlJobs.some(j=> !j.done)){
+    // (Not while a zip still waits for a tap: its rows must stay in the list.)
+    if(dlRows.length && dlRows.every(dlSettled) && !dlJobs.some(j=> !j.done) && !dlParts.length){
       dlRows = []; dlJobs = []; dlEls.list.textContent = '';
       dlStart = 0; dlListOpen = null; dlReportKey = '';
     }
@@ -1362,7 +1376,8 @@ footer .footer-link:hover{text-decoration:underline;}
     dlEls.sub.textContent = sub;
     dlEls.now.textContent = !allDone && active && total > 1 ? `Now: ${active.name}` : '';
     dlEls.keep.textContent = allDone
-      ? (!isZip ? (failed ? '' : "Saved to your browser's downloads.")
+      ? (dlParts.length ? 'Some files are not downloaded yet. Tap the button below to get them.'
+         : !isZip ?(failed ? '' : "Saved to your browser's downloads.")
          : skipped ? "The zip stopped early, so it is incomplete."
          : failed ? `Your zip is in your browser's downloads, without the ${failed} file${failed === 1 ? '' : 's'} listed below (also named in _MISSING_FILES.txt inside the zip).`
          : "Done. Your zip is in your browser's downloads.")
@@ -1370,6 +1385,18 @@ footer .footer-link:hover{text-decoration:underline;}
     document.title = allDone || starting ? pageTitle : `${pct}% · Downloading · ${pageTitle}`;
     dlEls.close.textContent = allDone ? 'Close' : 'Hide';
     if(allDone && dlTick){ clearInterval(dlTick); dlTick = null; }
+
+    // next zip (or a retry) waiting for a tap
+    const next = dlParts[0];
+    dlEls.parts.hidden = !next;
+    if(next){
+      const label = next.parts > 1 ? `part ${next.part + 1} of ${next.parts}` : 'zip';
+      const n = next.list.length;
+      dlEls.partsNote.textContent = next.retry
+        ? `${next.parts > 1 ? 'Part' : 'The'} ${label.replace(/^part /, '')} (${n} file${n === 1 ? '' : 's'}) didn't start. Your browser may have blocked it. Tap to try again.`
+        : `This gallery comes as ${next.parts} zips. Your browser only lets each tap start one, so tap for the next (${n} file${n === 1 ? '' : 's'}). You can tap now; zips download side by side.`;
+      dlEls.next.textContent = next.retry ? `Retry ${label}` : `Download ${label}`;
+    }
 
     // error report: one line per distinct code + a copyable block to screenshot
     const reportKey = failedRows.map(r=> r.err.code + r.err.ref).join('|');
@@ -1396,6 +1423,12 @@ footer .footer-link:hover{text-decoration:underline;}
     dlEls.list.hidden = !open;
   }
   dlEls.close.addEventListener('click', ()=> dlEls.root.classList.remove('open'));
+  dlEls.next.addEventListener('click', ()=> {
+    // Submit synchronously inside the tap, or the browser treats it as a pop-up.
+    const z = dlParts.shift();
+    if(z) downloadAsZip(z);
+    dlRefresh();
+  });
   dlEls.toggle.addEventListener('click', ()=> {
     dlListOpen = dlEls.list.hidden;   // currently hidden -> open it
     dlRefresh();
@@ -1506,6 +1539,7 @@ footer .footer-link:hover{text-decoration:underline;}
         if(Date.now() - job.born > 15000){
           job.done = true;
           job.rows.filter(r=> !dlSettled(r)).forEach(r=> dlFail(r, lsError('LS-JOB-LOST')));
+          if(job.zip) dlParts.push({ ...job.zip, rows: job.rows, retry: true });
         }
         continue;
       }
@@ -1567,9 +1601,18 @@ footer .footer-link:hover{text-decoration:underline;}
     els.downloadSelectedBtn.disabled = n === 0;
   }
 
-  function downloadAsZip(list, v, kind, part, total){
+  // z: { list, v, kind, part, total, parts, rows? }. part is 0-based, total the
+  // gallery's file count (logged once, with part 0), parts the number of zips.
+  // rows are passed for a queued part or a retry, so the panel reuses them.
+  // Must run inside a tap: the form opens a new tab.
+  function downloadAsZip(z){
+    const { list, v, kind, part, total } = z;
     const jobId = newJobId();
-    dlJobs.push({ id: jobId, rows: dlAddRows(list.map(p=> p.name)), born: Date.now(), done: false });
+    let rows = z.rows;
+    if(rows) rows.forEach(r=> dlSet(r, 'pending', 'Waiting', null));
+    else rows = dlAddRows(list.map(p=> p.name));
+    dlJobs.push({ id: jobId, rows, born: Date.now(), done: false, zip: { list, v, kind, part, total, parts: z.parts || 1 } });
+    dlEls.root.classList.add('open');
     dlStartPolling();
     const form = document.createElement('form');
     form.method = 'POST';
@@ -1611,7 +1654,7 @@ footer .footer-link:hover{text-decoration:underline;}
     const selected = allPhotos.filter(p=> selectedIds.has(p.id));
     if(selected.length === 0) return;
     if(selected.length === 1) triggerDownload(selected[0]);
-    else requireEmail((v)=> downloadAsZip(selected, v, 'selected', 0, selected.length));
+    else requireEmail((v)=> downloadAsZip({ list: selected, v, kind: 'selected', part: 0, total: selected.length }));
   }
 
   const MAX_ZIP_FILES = 200;
@@ -1619,27 +1662,22 @@ footer .footer-link:hover{text-decoration:underline;}
   // Download All is always the whole gallery, whichever folder is open.
   function downloadAll(){
     if(allPhotos.length === 0) return;
+    // Parts of an earlier Download All still waiting for a tap: show them
+    // rather than starting the whole gallery again.
+    if(dlParts.length){ dlEls.root.classList.add('open'); return; }
     requireEmail(runDownloadAll);
   }
 
-  async function runDownloadAll(v){
-    els.downloadAllBtn.disabled = true;
-    const original = els.downloadAllBtn.textContent;
-
-    if(allPhotos.length <= MAX_ZIP_FILES){
-      els.downloadAllBtn.textContent = 'Zipping…';
-      downloadAsZip(allPhotos, v, 'all', 0, allPhotos.length);
-    } else {
-      const chunks = Math.ceil(allPhotos.length / MAX_ZIP_FILES);
-      for(let i=0;i<chunks;i++){
-        els.downloadAllBtn.textContent = `Zipping ${i+1}/${chunks}`;
-        downloadAsZip(allPhotos.slice(i * MAX_ZIP_FILES, (i+1) * MAX_ZIP_FILES), v, 'all', i, allPhotos.length);
-        await new Promise(r=>setTimeout(r, 600));
-      }
+  // Over MAX_ZIP_FILES the gallery comes as several zips. Only the first starts
+  // now (this tap); the rest wait in the panel for a tap each (see dlParts).
+  function runDownloadAll(v){
+    const parts = Math.ceil(allPhotos.length / MAX_ZIP_FILES);
+    for(let i=0;i<parts;i++){
+      const z = { list: allPhotos.slice(i * MAX_ZIP_FILES, (i+1) * MAX_ZIP_FILES), v, kind: 'all', part: i, total: allPhotos.length, parts };
+      if(i === 0) downloadAsZip(z);
+      else dlParts.push({ ...z, rows: dlAddRows(z.list.map(p=> p.name)) });
     }
-
-    els.downloadAllBtn.textContent = original;
-    els.downloadAllBtn.disabled = false;
+    dlRefresh();
   }
 
   function formatExif(p){
