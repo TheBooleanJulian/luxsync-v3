@@ -268,14 +268,19 @@ async function downloadZip(request, env, ctx) {
       job.bytes = 0;
       track(true);
       if (isVideo(names[i])) {
+        // A video that can't even be opened (e.g. Drive's per-file quota) has
+        // sent no bytes yet, so it's skipped like a photo; only a failure
+        // partway through the stream (videoContent) has to end the zip.
+        let res;
         try {
-          const res = await openSource(env, provider, providerName, refs[i]);
-          yield { name: names[i], date: now, data: videoContent(i, refs[i], res), size: Number(res.headers.get("content-length")) || 0 };
+          res = await openSource(env, provider, providerName, refs[i]);
         } catch (err) {
           job.st[i] = "f";
-          job.fail[i] = describe(err, `zip member ${names[i]}`);
-          throw err;
+          const fail = (job.fail[i] = describe(err, `zip member ${names[i]}`));
+          missing.push(`${names[i]}  [${fail.code} ref ${fail.ref}]`);
+          continue;
         }
+        yield { name: names[i], date: now, data: videoContent(i, refs[i], res), size: Number(res.headers.get("content-length")) || 0 };
         job.st[i] = "d";
         continue;
       }

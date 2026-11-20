@@ -6,7 +6,7 @@
 
 **A premium, dependency-free photo gallery that turns any public Google Drive or Dropbox folder into a scrollable, previewable, downloadable client gallery.**
 
-![Version](https://img.shields.io/badge/version-0.15.1-00E5FF)
+![Version](https://img.shields.io/badge/version-0.15.2-00E5FF)
 ![Python](https://img.shields.io/badge/-Python-3776AB?logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/-FastAPI-009688?logo=fastapi&logoColor=white)
 ![Zeabur](https://img.shields.io/badge/-Zeabur-6C5CE7)
@@ -265,7 +265,7 @@ is also written to the server log next to the details, so search Zeabur's logs f
 | Code | Meaning | What to do |
 |---|---|---|
 | `LS-DRV-RATE` | Google Drive throttled the request and the retries ran out | Ask them to wait a minute and retry; if it recurs raise `DRIVE_MIN_INTERVAL_MS` |
-| `LS-DRV-FILE` | Google's per-file download cap for that file | Only happens for files not yet mirrored to R2; the background mirror retries every 30 min until Google lifts the cap |
+| `LS-DRV-FILE` | Google's per-file download cap for that file | Only happens for files not yet mirrored to R2; the background mirror retries every 30 min until Google lifts the cap. The cap also blocks the mirror's own copy, so for an urgent client upload the file to R2 from the local Drive sync: `cf r2 buckets objects upload drive/orig/<file id> --bucket-name luxsync-cache --content-type video/mp4 --file <path>` (300 MB max per file) |
 | `LS-DRV-GONE` | File deleted, moved, or no longer shared "Anyone with the link" | Check sharing in Drive |
 | `LS-DRV-CFG` | `DRIVE_API_KEY` missing on the server | Fix the env var |
 | `LS-NET-CUT` | Transfer from the source (or to the browser) dropped partway | Retry |
@@ -285,6 +285,7 @@ lists the failed files, and a `_MISSING_FILES.txt` inside the zip names them wit
 
 Summarised from commit history, most recent first. Versions follow `0.MINOR.PATCH` — MINOR for new features/architecture changes, PATCH for fixes.
 
+- **v0.15.2 — 2026-11-20 (zip skips blocked videos)** — A client's 8-video *Download All* ended with 0 of 8 files because the first video hit `LS-DRV-FILE` (Google's per-file download cap). A video that can't be opened at all is now skipped and listed in `_MISSING_FILES.txt`, like a photo; only a failure partway through a video still ends the zip.
 - **v0.15.1 — 2026-11-20 (multi-zip Download All on phones)** — A client on Android Chrome got `LS-JOB-LOST` for 189 of 389 files. Download All sent every zip after the first from a 600 ms timer into a new tab, and mobile Chrome blocked those as pop-ups, so part 2 never reached the server. Now only part 1 starts with the tap; each later part waits in the panel for its own tap (*Download part 2 of 2*). A zip that never reaches the server gets a *Retry* button and a clearer `LS-JOB-LOST` message. Browser-only change.
 - **v0.15.0 — 2026-11-19 (30-day expiry of originals)** — The background mirror deletes the R2 originals of galleries not opened for 30 days, and their done-records with them so a re-open copies them back. Thumbnails and previews are never deleted. `/admin` shows last-opened dates and an *Originals expired* status. Additive D1 columns `last_opened` / `expired_at`, added on first use.
 - **v0.14.1 — 2026-11-19 (resumable big-file mirroring)** — Originals over 256 MB are copied into R2 in 256 MB parts (multipart, progress in D1 `mirror_uploads`), so a copy that outlives a cron run resumes instead of restarting. A 3.4 GB Cam 2 clip had stalled the Miku gallery's mirror at 50/126 files. The 4.9 GB single-file limit is gone.
