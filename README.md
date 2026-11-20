@@ -6,7 +6,7 @@
 
 **A premium, dependency-free photo gallery that turns any public Google Drive or Dropbox folder into a scrollable, previewable, downloadable client gallery.**
 
-![Version](https://img.shields.io/badge/version-0.15.2-00E5FF)
+![Version](https://img.shields.io/badge/version-0.16.0-00E5FF)
 ![Python](https://img.shields.io/badge/-Python-3776AB?logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/-FastAPI-009688?logo=fastapi&logoColor=white)
 ![Zeabur](https://img.shields.io/badge/-Zeabur-6C5CE7)
@@ -168,6 +168,7 @@ Differences from the Python app to know about: Drive request pacing is per Worke
 - Thumbnails and previews come from Google's image CDN (`lh3.googleusercontent.com`), with `drive.google.com/thumbnail` as fallback. Until a thumbnail is mirrored, the gallery page keeps the tile's shape and retries for about 3 minutes.
 - Files over 256 MB are copied in 256 MB parts (R2 multipart, one ranged download per part). Finished parts are recorded in D1 `mirror_uploads`, so a copy that outlives a cron run resumes where it stopped instead of restarting.
 - **Expiry:** the originals of a gallery nobody has opened for 30 days are deleted from R2. That's every gallery, photos and video alike; `MIRROR_EXPIRE_DAYS` overrides the 30. Thumbnails and previews are kept forever, so an old link still browses instantly. Opening it again restarts the clock and the background mirror copies the originals back; downloads come from the source until it has. Files shared with a gallery opened in the last 30 days (a folder inside another) are kept. `/admin` shows each gallery's last-opened date and an *Originals expired* status.
+- **Blocked by Google's per-file cap (`LS-DRV-FILE`):** the cap also blocks the mirror's own copy. Upload the file from this PC's Drive for Desktop copy instead: `python tools/r2_push.py "<local gallery folder>" <drive folder id>` (add `--dry-run` first to see the matches). It matches local files to the gallery by name, skips ones already in R2 and uses multipart, so there's no size limit. It needs an R2 S3 key in `secrets/r2-s3.env` (`R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`; create it under R2 → *Manage API tokens* → *Object Read & Write*, bucket `luxsync-cache` only). The next cron run marks the files as mirrored. If the gallery later expires, run it again.
 - Unmirrored files still come from the source. Storage therefore stays roughly at the originals of galleries opened in the last month, plus ~0.5 MB per photo of thumbnails and previews (~$0.015/GB-month beyond the free 10 GB). Anyone who opens a public folder in LuxSync enrols it, so pause any you don't want copied.
 
 ## Screenshots
@@ -265,7 +266,7 @@ is also written to the server log next to the details, so search Zeabur's logs f
 | Code | Meaning | What to do |
 |---|---|---|
 | `LS-DRV-RATE` | Google Drive throttled the request and the retries ran out | Ask them to wait a minute and retry; if it recurs raise `DRIVE_MIN_INTERVAL_MS` |
-| `LS-DRV-FILE` | Google's per-file download cap for that file | Only happens for files not yet mirrored to R2; the background mirror retries every 30 min until Google lifts the cap. The cap also blocks the mirror's own copy, so for an urgent client upload the file to R2 from the local Drive sync: `cf r2 buckets objects upload drive/orig/<file id> --bucket-name luxsync-cache --content-type video/mp4 --file <path>` (300 MB max per file) |
+| `LS-DRV-FILE` | Google's per-file download cap for that file | Only happens for files not yet mirrored to R2; the background mirror retries every 30 min until Google lifts the cap. The cap also blocks the mirror's own copy, so for an urgent client push the files from this PC with `tools/r2_push.py` (see *R2 mirror*) |
 | `LS-DRV-GONE` | File deleted, moved, or no longer shared "Anyone with the link" | Check sharing in Drive |
 | `LS-DRV-CFG` | `DRIVE_API_KEY` missing on the server | Fix the env var |
 | `LS-NET-CUT` | Transfer from the source (or to the browser) dropped partway | Retry |
@@ -285,6 +286,7 @@ lists the failed files, and a `_MISSING_FILES.txt` inside the zip names them wit
 
 Summarised from commit history, most recent first. Versions follow `0.MINOR.PATCH` — MINOR for new features/architecture changes, PATCH for fixes.
 
+- **v0.16.0 — 2026-11-20 (local upload to R2)** — `tools/r2_push.py` uploads a gallery's originals to the R2 mirror from the local Drive for Desktop copy, for files Google's per-file cap (`LS-DRV-FILE`) blocks from both clients and the mirror. Standard library only, S3 multipart, so it has no size limit, unlike the 300 MB cap of `cf`/`wrangler` uploads. It reads a bucket-scoped R2 key from `secrets/r2-s3.env`. No Worker change.
 - **v0.15.2 — 2026-11-20 (zip skips blocked videos)** — A client's 8-video *Download All* ended with 0 of 8 files because the first video hit `LS-DRV-FILE` (Google's per-file download cap). A video that can't be opened at all is now skipped and listed in `_MISSING_FILES.txt`, like a photo; only a failure partway through a video still ends the zip.
 - **v0.15.1 — 2026-11-20 (multi-zip Download All on phones)** — A client on Android Chrome got `LS-JOB-LOST` for 189 of 389 files. Download All sent every zip after the first from a 600 ms timer into a new tab, and mobile Chrome blocked those as pop-ups, so part 2 never reached the server. Now only part 1 starts with the tap; each later part waits in the panel for its own tap (*Download part 2 of 2*). A zip that never reaches the server gets a *Retry* button and a clearer `LS-JOB-LOST` message. Browser-only change.
 - **v0.15.0 — 2026-11-19 (30-day expiry of originals)** — The background mirror deletes the R2 originals of galleries not opened for 30 days, and their done-records with them so a re-open copies them back. Thumbnails and previews are never deleted. `/admin` shows last-opened dates and an *Originals expired* status. Additive D1 columns `last_opened` / `expired_at`, added on first use.
