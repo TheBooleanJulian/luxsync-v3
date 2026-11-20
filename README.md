@@ -6,7 +6,7 @@
 
 **A premium, dependency-free photo gallery that turns any public Google Drive or Dropbox folder into a scrollable, previewable, downloadable client gallery.**
 
-![Version](https://img.shields.io/badge/version-0.15.0-00E5FF)
+![Version](https://img.shields.io/badge/version-0.15.1-00E5FF)
 ![Python](https://img.shields.io/badge/-Python-3776AB?logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/-FastAPI-009688?logo=fastapi&logoColor=white)
 ![Zeabur](https://img.shields.io/badge/-Zeabur-6C5CE7)
@@ -43,7 +43,7 @@ The reasons for v1 are inferred from its commit history; none were recorded at t
 - **Sort dropdown** — reorder the gallery on the fly
 - **Lightbox preview** — click any photo for a full-size overlay with filename and EXIF (dimensions, camera, focal length, aperture, shutter speed, ISO where the source provides it)
 - **Multi-select zip download** — click to select individual photos, or select one and Shift-click another to select the whole range in between; stream a zip built on the fly via `stream-zip`, named after the gallery, with nothing buffered in memory or on disk
-- **Download All** — zips the entire gallery the same way, chunked automatically for very large folders
+- **Download All** — zips the entire gallery the same way. Over 200 files it comes as several zips: the first starts right away and each later part gets its own *Download part N of M* button in the panel, because mobile browsers block a second zip that isn't started by a tap
 - **Single-file download** — selecting exactly one photo skips the zip and streams the original directly
 - **Per-IP rate limiting** — every route is independently limited via `slowapi`; one heavy visitor degrades gracefully without burning API quota for everyone
 - **Shareable gallery links** — provider + source id encoded in the URL so a gallery view is directly linkable (old Drive-only `?folder=` links still work)
@@ -272,7 +272,7 @@ is also written to the server log next to the details, so search Zeabur's logs f
 | `LS-NET-OFF` | The visitor's own connection dropped (browser-side) | Retry |
 | `LS-SRC-EMPTY` | Source returned an empty file | Check the file in Drive |
 | `LS-ZIP-FAIL` | A zip was interrupted (video failed mid-stream, or the connection closed) | Retry |
-| `LS-JOB-LOST` | Server never confirmed the zip (rejected, or restarted mid-download) | Retry |
+| `LS-JOB-LOST` | The zip never reached the server within 15 s: usually the browser blocked it as a pop-up, otherwise rejected (e.g. rate limit) | The panel offers a *Retry* button for that zip |
 | `LS-LIMIT` | Our own per-IP rate limit (slowapi) | Wait a minute |
 | `LS-PREP-FAIL` | Copying a file into R2 failed partway (admin Prepare / background mirror only) | Retried automatically |
 | `LS-PREP-RANGE` | The source ignored a ranged request while a big file was copied in parts | Retried automatically |
@@ -285,6 +285,7 @@ lists the failed files, and a `_MISSING_FILES.txt` inside the zip names them wit
 
 Summarised from commit history, most recent first. Versions follow `0.MINOR.PATCH` — MINOR for new features/architecture changes, PATCH for fixes.
 
+- **v0.15.1 — 2026-11-20 (multi-zip Download All on phones)** — A client on Android Chrome got `LS-JOB-LOST` for 189 of 389 files. Download All sent every zip after the first from a 600 ms timer into a new tab, and mobile Chrome blocked those as pop-ups, so part 2 never reached the server. Now only part 1 starts with the tap; each later part waits in the panel for its own tap (*Download part 2 of 2*). A zip that never reaches the server gets a *Retry* button and a clearer `LS-JOB-LOST` message. Browser-only change.
 - **v0.15.0 — 2026-11-19 (30-day expiry of originals)** — The background mirror deletes the R2 originals of galleries not opened for 30 days, and their done-records with them so a re-open copies them back. Thumbnails and previews are never deleted. `/admin` shows last-opened dates and an *Originals expired* status. Additive D1 columns `last_opened` / `expired_at`, added on first use.
 - **v0.14.1 — 2026-11-19 (resumable big-file mirroring)** — Originals over 256 MB are copied into R2 in 256 MB parts (multipart, progress in D1 `mirror_uploads`), so a copy that outlives a cron run resumes instead of restarting. A 3.4 GB Cam 2 clip had stalled the Miku gallery's mirror at 50/126 files. The 4.9 GB single-file limit is gone.
 - **v0.14.0 — 2026-11-19 (R2 mirror)** — Galleries are copied into R2 and served from there, so clients no longer hit Google Drive's burst throttling (blank thumbnails) or per-file download caps (`LS-DRV-FILE` on popular videos). There's a background Cron Trigger mirror for every opened gallery, plus *Prepare gallery* in `/admin` with a mirrored-galleries table. Thumbnails now come from Google's image CDN first. Removed a shared thumbnail queue that leaked slots when browsers cancelled image loads, which hung later thumbnails (Cloudflare error 1101). Single video downloads are resumable (Range/If-Range, logged once). Tiles keep their shape while a thumbnail retries. `.lrf`/`.lrv` proxies are treated as video.
