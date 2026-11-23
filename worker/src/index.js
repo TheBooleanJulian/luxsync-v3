@@ -7,6 +7,7 @@
 // Worker. Responses keep the shapes index.html and admin.html already expect.
 import * as cache from "./cache.js";
 import * as dl from "./downloads.js";
+import { errorSummary, flushErrors, listErrors, pruneErrors, recordClientReport } from "./errorlog.js";
 import { newJob, readJobs, saveJob } from "./jobs.js";
 import {
   expireOriginals, listMirrors, openSource, origKey, prepareResponse, registerGallery, runMirror, setPaused,
@@ -15,8 +16,8 @@ import * as drive from "./providers/drive.js";
 import * as dropbox from "./providers/dropbox.js";
 import { generatorToStream, zipStream } from "./zip.js";
 import {
-  HttpError, LuxError, clientIp, contentDisposition, dedupeNames, describe, guessType, isVideo, json,
-  requireAdmin, requireEmail, resumeRange, sanitizeZipName, sleep,
+  HttpError, LuxError, annotateError, clientIp, contentDisposition, dedupeNames, describe, guessType, isVideo, json,
+  recordError, requireAdmin, requireEmail, resumeRange, sanitizeZipName, sleep,
 } from "./util.js";
 import adminHtml from "../../admin.html";
 
@@ -253,6 +254,7 @@ async function downloadZip(request, env, ctx) {
     } catch (err) {
       job.st[i] = "f";
       job.fail[i] = describe(err, `zip member ${names[i]}`);
+      annotateError(job.fail[i].ref, { gallery: field("source"), path: "/api/download-zip" });
       throw err;
     }
   }
@@ -277,6 +279,7 @@ async function downloadZip(request, env, ctx) {
         } catch (err) {
           job.st[i] = "f";
           const fail = (job.fail[i] = describe(err, `zip member ${names[i]}`));
+          annotateError(fail.ref, { gallery: field("source"), path: "/api/download-zip" });
           missing.push(`${names[i]}  [${fail.code} ref ${fail.ref}]`);
           continue;
         }
@@ -290,6 +293,7 @@ async function downloadZip(request, env, ctx) {
       } catch (err) {
         job.st[i] = "f";
         const fail = (job.fail[i] = describe(err, `zip member ${names[i]}`));
+        annotateError(fail.ref, { gallery: field("source"), path: "/api/download-zip" });
         missing.push(`${names[i]}  [${fail.code} ref ${fail.ref}]`);
         continue;
       }
@@ -315,8 +319,12 @@ async function downloadZip(request, env, ctx) {
       job.error = err instanceof Error
         ? describe(err, "zip")
         : { code: "LS-ZIP-FAIL", message: "The download was cancelled or the connection closed.", ref: "" };
+      annotateError(job.error.ref, { gallery: field("source"), path: "/api/download-zip" });
       await saveJob(job, true);
       throw err;
+    } finally {
+      // Zip members fail after the response has started, so flush here too.
+      ctx.waitUntil(flushErrors(env));
     }
   }
 
@@ -368,6 +376,15 @@ async function adminRoutes(request, env, ctx, url) {
       return new Response(adminHtml, { headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" } });
     case "/api/admin/mirrors":
       return json(await listMirrors(env), 200, { "Cache-Control": "no-store" });
+    case "/api/admin/errors": {
+      const limitN = Math.min(Math.max(Number(url.searchParams.get("limit")) || 100, 1), 500);
+      const offset = Math.max(Number(url.searchParams.get("offset")) || 0, 0);
+      return json(await listErrors(env, {
+        q, origin: url.searchParams.get("origin") || "", code: (url.searchParams.get("code") || "").trim(), limit: limitN, offset,
+      }), 200, { "Cache-Control": "no-store" });
+    }
+    case "/api/admin/errors/summary":
+      return json(await errorSummary(env), 200, { "Cache-Control": "no-store" });
     case "/api/admin/stats":
       return json(await dl.stats(env));
     case "/api/admin/downloads": {
@@ -410,6 +427,13 @@ async function route(request, env, ctx) {
   if (path === "/admin" || path.startsWith("/api/admin/")) return adminRoutes(request, env, ctx, url);
   if (path === "/api/gallery" && method === "POST") return getGallery(request, env, ctx);
   if (path === "/api/download-zip" && method === "POST") return downloadZip(request, env, ctx);
+  if (path === "/api/client-error" && method === "POST") {
+    await limit(env, request, "DOWNLOAD");
+    let body;
+    try { body = await request.json(); } catch { throw new HttpError(422, "Invalid JSON body"); }
+    await recordClientReport(env, request, body);
+    return new Response(null, { status: 204 });
+  }
   if (path === "/api/download-progress" && method === "GET") {
     await limit(env, request, "PROGRESS");
     return json(await readJobs(url.searchParams.get("jobs") || ""), 200, { "Cache-Control": "no-store" });
@@ -424,17 +448,21 @@ export default {
   async fetch(request, env, ctx) {
     if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
     let res;
+    const path = new URL(request.url).pathname;
     try {
       res = await route(request, env, ctx);
     } catch (err) {
       if (err instanceof HttpError) {
+        if (err instanceof LuxError) annotateError(err.detail.ref, { path });
         const body = err.status === 429 ? { error: err.detail } : { detail: err.detail };
         res = json(body, err.status, err.headers);
       } else {
         console.error("Unhandled error", err);
+        recordError({ code: "LS-UNHANDLED", status: 500, path, context: String(err?.stack || err).slice(0, 1000) });
         res = json({ detail: "Internal Server Error" }, 500);
       }
     }
+    ctx.waitUntil(flushErrors(env));
     // Public gallery data gated only by knowing the source folder id, so a wildcard origin is fine.
     const out = new Response(res.body, res);
     for (const [k, v] of Object.entries(CORS)) out.headers.set(k, v);
@@ -442,11 +470,18 @@ export default {
   },
 
   // Cron Trigger (wrangler.jsonc): expire originals of galleries not opened for
-  // 30 days, then mirror whatever opened galleries are still missing.
+  // 30 days, mirror whatever opened galleries are still missing, prune the
+  // error console (ERROR_LOG_DAYS, default 30), and save this run's errors.
   async scheduled(event, env, ctx) {
+    const failed = (job) => (err) => {
+      console.error(`${job} failed`, err);
+      recordError({ code: "LS-CRON-FAIL", path: `cron ${job}`, context: String(err?.stack || err).slice(0, 1000) });
+    };
     ctx.waitUntil((async () => {
-      await expireOriginals(env).catch((err) => console.error("expireOriginals failed", err));
-      await runMirror(env, PROVIDERS).catch((err) => console.error("runMirror failed", err));
+      await expireOriginals(env).catch(failed("expireOriginals"));
+      await runMirror(env, PROVIDERS).catch(failed("runMirror"));
+      await pruneErrors(env).catch(failed("pruneErrors"));
+      await flushErrors(env);
     })());
   },
 };

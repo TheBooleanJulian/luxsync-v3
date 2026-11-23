@@ -6,7 +6,7 @@
 
 **A premium, dependency-free photo gallery that turns any public Google Drive or Dropbox folder into a scrollable, previewable, downloadable client gallery.**
 
-![Version](https://img.shields.io/badge/version-0.16.2-00E5FF)
+![Version](https://img.shields.io/badge/version-0.17.0-00E5FF)
 ![Python](https://img.shields.io/badge/-Python-3776AB?logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/-FastAPI-009688?logo=fastapi&logoColor=white)
 ![Zeabur](https://img.shields.io/badge/-Zeabur-6C5CE7)
@@ -100,7 +100,14 @@ python main.py
 
 Before a visitor's first download the gallery asks for an email (plus an optional newsletter opt-in checkbox) and remembers it in that browser's `localStorage`. The download endpoints reject requests without a syntactically valid email, then log one row per download — time, email, gallery, type (single photo / selection / whole gallery), filenames, and a salted IP hash — to `DATA_DIR/luxsync.db` (SQLite).
 
-Open `/admin` (set `ADMIN_PASSWORD` first) for the **Gallery** and **Single Photo** activity tabs, a deduplicated **Emails** list with opt-in status, search, and CSV export. A chunked "Download All" (over 200 files) is logged once.
+Open `/admin` (set `ADMIN_PASSWORD` first) on either domain. It has four sections (`#health`, `#errors`, `#mirror` and `#downloads` in the URL):
+
+- **Health:** errors in the last 24 h (server and client), Google cap errors in the last hour, galleries still copying, an errors-per-hour chart, a table of error codes with plain-English meanings (click one to open it in the console), and the galleries not yet fully in R2.
+- **Errors:** the error console. Every server error is logged with its code, ref, HTTP status, where it happened (route, zip or cron mirror), gallery and details. So is every error report a visitor's browser shows (the "LUXSYNC ERROR REPORT" box clients screenshot), with the full report text. To find what went wrong, paste the `Ref` from a client's screenshot into the search box: the server row and the client report share it. Click a row for the full detail. It refreshes every 30 s. Kept for `ERROR_LOG_DAYS` (default 30) in D1 `error_log`. In an error storm, each Worker instance logs at most 60 server errors a minute and records the rest as one `LS-LOG-SAMPLED` row with the count.
+- **Mirror:** *Prepare gallery* and the mirrored-galleries table (see *R2 mirror*).
+- **Downloads:** the **Gallery** and **Single Photo** activity tabs, a deduplicated **Emails** list with opt-in status, search, and CSV export. A chunked "Download All" (over 200 files) is logged once.
+
+Workers logs aren't enabled, so the console is the place to debug. The `console.warn` lines still go to `wrangler tail` while it's running.
 
 Notes:
 - **Persistence:** Zeabur's container disk is ephemeral. Mount a persistent volume at `DATA_DIR`, or the log resets on every deploy.
@@ -286,6 +293,7 @@ lists the failed files, and a `_MISSING_FILES.txt` inside the zip names them wit
 
 Summarised from commit history, most recent first. Versions follow `0.MINOR.PATCH` — MINOR for new features/architecture changes, PATCH for fixes.
 
+- **v0.17.0 — 2026-11-24 (admin dashboard + error console)** — `/admin` is now a dashboard with *Health*, *Errors*, *Mirror* and *Downloads* sections. Every server error (each `LS-*` code, unhandled crashes, failed cron jobs) is saved to D1 `error_log` with its ref, route, gallery and details. Browsers also send the error report they show visitors (`POST /api/client-error`, rate-limited, validated, size-capped), so a client's screenshot can be matched by its ref. *Health* shows 24-hour totals, Google cap errors in the last hour, an errors-per-hour chart, codes with plain-English meanings, and the galleries not yet fully in R2. Old rows are pruned after `ERROR_LOG_DAYS` (30) by the cron run.
 - **v0.16.2 — 2026-11-23 (mirror fairness)** — About 25 old BNI galleries opened overnight all hit Google's per-file cap (`LS-DRV-FILE`). Each 5-minute run spent its whole 50-file budget re-failing the first files of one gallery, so a new gallery (Fatui, opened 09:18) was never copied, and a client's photo download from it hit the cap. Now never-copied galleries go first, 3 cap errors in a row park a gallery for 3 hours, and each pass starts at a random file.
 - **v0.16.1 — 2026-11-23 (accurova.com domain)** — The Worker also answers on `luxsync-v3.accurova.com` (second custom domain, same Worker, R2 and D1). The logo links are now relative, so visitors stay on whichever domain they came in on. Social-preview tags still point at `luxsync-v3.thebooleanjulian.dev`.
 - **v0.16.0 — 2026-11-20 (local upload to R2)** — `tools/r2_push.py` uploads a gallery's originals to the R2 mirror from the local Drive for Desktop copy, for files Google's per-file cap (`LS-DRV-FILE`) blocks from both clients and the mirror. Standard library only, S3 multipart, so it has no size limit, unlike the 300 MB cap of `cf`/`wrangler` uploads. It reads a bucket-scoped R2 key from `secrets/r2-s3.env`. No Worker change.

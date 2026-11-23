@@ -35,3 +35,13 @@ CREATE TABLE IF NOT EXISTS mirror_uploads (
      provider TEXT NOT NULL, ref TEXT NOT NULL, upload_id TEXT NOT NULL, size INTEGER NOT NULL,
      parts TEXT NOT NULL, updated_at TEXT NOT NULL,
      PRIMARY KEY (provider, ref));
+
+-- Error console for /admin (worker/src/errorlog.js, which also creates it on
+-- first use). Server errors (origin 'server') plus the error reports visitors'
+-- browsers were shown (origin 'client'). Pruned after ERROR_LOG_DAYS (30).
+CREATE TABLE IF NOT EXISTS error_log (
+     id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL, origin TEXT NOT NULL,
+     code TEXT NOT NULL, ref TEXT, status INTEGER, path TEXT, gallery TEXT,
+     context TEXT, report TEXT, ip_hash TEXT);
+CREATE INDEX IF NOT EXISTS error_log_ts ON error_log (ts);
+CREATE INDEX IF NOT EXISTS error_log_ref ON error_log (ref);

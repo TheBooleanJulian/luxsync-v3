@@ -1340,6 +1340,23 @@ footer .footer-link:hover{text-decoration:underline;}
     ].filter(Boolean).join('\n');
   }
 
+  // Send the shown report to the photographer's error console (/admin → Errors),
+  // once the failures settle, so a big zip sends one report rather than fifty.
+  let dlReportTimer = null;
+  function dlQueueReport(failedRows){
+    clearTimeout(dlReportTimer);
+    dlReportTimer = setTimeout(()=>{
+      const body = {
+        report: dlReportText(failedRows),
+        codes: [...new Set(failedRows.map(r=> r.err.code))],
+        refs: [...new Set(failedRows.map(r=> r.err.ref).filter(Boolean))],
+        source: currentSourceId || '', gallery_name: currentGalleryName || '',
+      };
+      fetch('/api/client-error', {method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(body), keepalive: true}).catch(()=>{});
+    }, 4000);
+  }
+
   function dlRefresh(){
     const total = dlRows.length;
     const failedRows = dlRows.filter(r=> r.status === 'error');
@@ -1413,6 +1430,7 @@ footer .footer-link:hover{text-decoration:underline;}
         dlEls.reportCodes.appendChild(li);
       });
       dlEls.reportBody.textContent = dlReportText(failedRows);
+      dlQueueReport(failedRows);
     }
 
     // long lists collapse behind a toggle; the hero shows what's happening
