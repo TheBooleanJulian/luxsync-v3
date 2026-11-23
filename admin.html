@@ -256,6 +256,71 @@ td.mono{font-size:11.5px;line-height:16px;font-weight:500;letter-spacing:0.02em;
   content:"x";display:inline-grid;place-items:center;width:18px;height:18px;flex-shrink:0;
   border:1px solid currentColor;border-radius:var(--radius-sm);color:var(--danger);font:700 11px/1 var(--font-mono);
 }
+/* ---------- dashboard sections ---------- */
+.nav{display:flex;gap:var(--space-1);border-bottom:1px solid var(--line);margin-bottom:var(--space-5);overflow-x:auto;}
+.nav button{
+  position:relative;height:var(--control-lg);padding:0 var(--space-4);background:transparent;border:0;flex-shrink:0;
+  color:var(--ink-muted);font:600 12px/16px var(--font-display);letter-spacing:0.14em;text-transform:uppercase;cursor:pointer;
+  transition:color var(--dur-fast) var(--ease-out);
+}
+.nav button:hover{color:var(--ink);}
+.nav button[aria-selected="true"]{color:var(--cyan-ink);}
+.nav button[aria-selected="true"]::after{content:"";position:absolute;left:0;right:0;bottom:-1px;height:2px;background:linear-gradient(90deg,var(--cyan),var(--magenta));}
+.nav .count{margin-left:6px;font:500 11px/14px var(--font-mono);letter-spacing:0;color:var(--ink-muted);}
+.panel .eyebrow + .table-wrap,.panel p + .table-wrap{margin-top:var(--space-3);}
+.panel .table-wrap{background:var(--bg);}
+.panel-head{display:flex;justify-content:space-between;align-items:baseline;gap:var(--space-3);flex-wrap:wrap;}
+.hint{font:500 11.5px/16px var(--font-mono);color:var(--ink-muted);}
+.stat .note{font:500 11.5px/16px var(--font-mono);color:var(--ink-muted);margin-top:var(--space-1);}
+.stat .note.warn{color:var(--warning);}
+.stat .note.ok{color:var(--success);}
+.badge.bad{color:var(--danger);}
+.clickable{cursor:pointer;}
+
+/* errors-per-hour chart: one series, bars in --cyan-ink (3:1 on the surface in both themes) */
+.chart{position:relative;margin-top:var(--space-3);}
+.chart svg{display:block;width:100%;height:180px;overflow:visible;}
+.chart .bar{fill:var(--cyan-ink);}
+.chart .band{fill:var(--surface-raised);opacity:0;}
+.chart .col:hover .band{opacity:1;}
+.chart .grid{stroke:var(--line);stroke-width:1;}
+.chart .base{stroke:var(--line-strong);stroke-width:1;}
+.chart text{fill:var(--ink-muted);font:500 10.5px/1 var(--font-mono);}
+.tip{
+  position:absolute;pointer-events:none;transform:translate(-50%,calc(-100% - 8px));z-index:2;
+  background:var(--surface-overlay);border:1px solid var(--line-strong);border-radius:var(--radius-md);box-shadow:var(--elevation);
+  padding:6px var(--space-2);font:500 11.5px/16px var(--font-mono);color:var(--ink);white-space:nowrap;
+}
+.tip b{font-weight:600;}
+
+/* error console */
+.live{display:inline-flex;align-items:center;gap:6px;font:500 11.5px/16px var(--font-mono);color:var(--ink-muted);white-space:nowrap;}
+.live::before{content:"";width:6px;height:6px;border-radius:var(--radius-pill);background:var(--magenta);}
+.live.paused::before{background:var(--ink-faint);}
+#errors{min-width:960px;}   /* scrolls sideways in its box on phones instead of breaking every cell */
+#codes,#attention{min-width:600px;}
+#errors td.mono{white-space:nowrap;}
+#errors td.where{max-width:180px;overflow:hidden;text-overflow:ellipsis;}
+#errors td.gal{min-width:170px;}
+/* two lines here; the full text is in the row's detail */
+#errors .ctx{font:500 11.5px/16px var(--font-mono);color:var(--ink-muted);word-break:break-all;min-width:260px;}
+#errors .ctx span{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;}
+tr.open > td{background:var(--surface-raised);}
+tr.detail > td{background:var(--bg);padding:var(--space-4);}
+.kv{display:grid;grid-template-columns:max-content 1fr;gap:var(--space-1) var(--space-4);font:500 11.5px/16px var(--font-mono);}
+.kv dt{color:var(--ink-muted);}
+.kv dd{color:var(--ink);word-break:break-all;}
+.kv a{color:var(--cyan-ink);}
+.kv .btn{height:var(--control-sm);padding:0 var(--space-2);margin-left:var(--space-2);vertical-align:middle;}
+pre.report{
+  margin-top:var(--space-3);padding:var(--space-3);white-space:pre-wrap;word-break:break-all;
+  background:var(--surface-raised);border:1px solid var(--line);border-radius:var(--radius-md);
+  font:500 11.5px/16px var(--font-mono);color:var(--ink);
+}
+@media (max-width: 640px){
+  input[type="search"]{width:100%;}
+  .tools{width:100%;}
+}
 @media (prefers-reduced-motion: reduce){*{transition:none !important;animation:none !important;}}
 </style>
 </head>
@@ -267,13 +332,57 @@ td.mono{font-size:11.5px;line-height:16px;font-weight:500;letter-spacing:0.02em;
       <h1>LuxSync Admin</h1>
     </a>
     <div class="head-right">
-      <div class="eyebrow">Download activity</div>
+      <div class="eyebrow">Dashboard</div>
       <button class="btn ghost" id="themeBtn" type="button" title="Switch light / dark theme">Light</button>
     </div>
   </header>
 
   <div class="err" id="err" hidden></div>
 
+  <nav class="nav" id="nav" role="tablist" aria-label="Dashboard sections">
+    <button type="button" role="tab" data-go="health" aria-selected="true">Health</button>
+    <button type="button" role="tab" data-go="errors" aria-selected="false">Errors<span class="count" id="navErrCount"></span></button>
+    <button type="button" role="tab" data-go="mirror" aria-selected="false">Mirror</button>
+    <button type="button" role="tab" data-go="downloads" aria-selected="false">Downloads</button>
+  </nav>
+
+  <!-- Health: what's going wrong right now -->
+  <div data-section="health" role="tabpanel">
+    <div class="stats" id="health"></div>
+    <section class="panel">
+      <div class="panel-head"><div class="eyebrow">Errors per hour · last 24 h</div><span class="hint" id="chartNote"></span></div>
+      <div class="chart" id="chart"></div>
+    </section>
+    <section class="panel">
+      <div class="eyebrow">Error codes · last 24 h</div>
+      <p>Click a code to see every occurrence in the error console.</p>
+      <div class="table-wrap"><table id="codes"></table></div>
+    </section>
+    <section class="panel">
+      <div class="eyebrow">Galleries needing attention</div>
+      <p>Galleries the background mirror hasn't finished copying into R2. Until it has, those files come from Google Drive and can hit its limits.</p>
+      <div class="table-wrap"><table id="attention"></table></div>
+    </section>
+  </div>
+
+  <!-- Errors: every server error plus the reports visitors were shown -->
+  <div data-section="errors" role="tabpanel" hidden>
+    <div class="bar">
+      <div class="tabs" id="originTabs" role="tablist" aria-label="Error source">
+        <button class="tab" role="tab" aria-selected="true" data-origin="">All</button>
+        <button class="tab" role="tab" aria-selected="false" data-origin="server">Server</button>
+        <button class="tab" role="tab" aria-selected="false" data-origin="client">Client reports</button>
+      </div>
+      <div class="tools">
+        <span class="live" id="live">Live</span>
+        <input type="search" id="eq" placeholder="Ref, code, gallery, file…" aria-label="Search errors">
+      </div>
+    </div>
+    <div class="table-wrap"><table id="errors"></table></div>
+    <div class="foot"><span id="ecount"></span><button class="btn" id="emore" hidden>Load more</button></div>
+  </div>
+
+  <div data-section="mirror" role="tabpanel" hidden>
   <section class="panel" aria-labelledby="prepTitle">
     <div class="eyebrow" id="prepTitle">Prepare gallery</div>
     <p>Every gallery that gets opened is copied into LuxSync's own storage automatically in the background (every 5 minutes, including files added later), so clients never hit Google Drive's limits. Use Prepare to do it right now, before you share the link. Safe to re-run: files already copied are skipped. Originals of a gallery nobody opens for 30 days are deleted (thumbnails and previews stay), and copied again the next time it's opened.</p>
@@ -289,7 +398,9 @@ td.mono{font-size:11.5px;line-height:16px;font-weight:500;letter-spacing:0.02em;
     </div>
     <div class="table-wrap mirrors"><table id="mirrors"></table></div>
   </section>
+  </div>
 
+  <div data-section="downloads" role="tabpanel" hidden>
   <div class="stats" id="stats"></div>
 
   <div class="bar">
@@ -306,6 +417,7 @@ td.mono{font-size:11.5px;line-height:16px;font-weight:500;letter-spacing:0.02em;
 
   <div class="table-wrap"><table id="table"></table></div>
   <div class="foot"><span id="count"></span><button class="btn" id="more" hidden>Load more</button></div>
+  </div>
 </div>
 
 <script>
@@ -414,7 +526,7 @@ td.mono{font-size:11.5px;line-height:16px;font-weight:500;letter-spacing:0.02em;
   $('tabs').addEventListener('click', (e)=>{
     const tab = e.target.closest('.tab');
     if(!tab) return;
-    document.querySelectorAll('.tab').forEach(t=> t.setAttribute('aria-selected', String(t === tab)));
+    $('tabs').querySelectorAll('.tab').forEach(t=> t.setAttribute('aria-selected', String(t === tab)));
     view = tab.dataset.view;
     load(true);
   });
@@ -527,6 +639,7 @@ td.mono{font-size:11.5px;line-height:16px;font-weight:500;letter-spacing:0.02em;
   async function loadMirrors(){
     let rows;
     try { rows = await api('/api/admin/mirrors'); } catch(e){ return; }
+    mirrorRows = rows;
     const table = $('mirrors');
     table.replaceChildren(header(['Gallery', 'Mirrored', 'Status', 'Last opened', '']));
     const tbody = el('tbody');
@@ -605,10 +718,298 @@ td.mono{font-size:11.5px;line-height:16px;font-weight:500;letter-spacing:0.02em;
     syncThemeBtn();
   });
 
-  loadStats().catch(e=> showErr(`Failed to load: ${e.message}`));
-  load(true);
-  loadMirrors();
-  setInterval(()=>{ if(!document.hidden) loadMirrors(); }, 60000);
+  // ---------- error codes, in plain words (same list as the README) ----------
+  const CODES = {
+    'LS-DRV-FILE': "Google's per-file download cap",
+    'LS-DRV-RATE': 'Google throttled a burst of requests',
+    'LS-DRV-GONE': 'File deleted, moved or no longer shared',
+    'LS-DRV-CFG': 'Worker is missing DRIVE_API_KEY',
+    'LS-NET-CUT': 'Transfer dropped partway',
+    'LS-NET-OFF': "Visitor's own connection dropped",
+    'LS-SRC-EMPTY': 'Source returned an empty file',
+    'LS-ZIP-FAIL': 'Zip interrupted',
+    'LS-JOB-LOST': 'Zip never reached the server (often a blocked pop-up)',
+    'LS-LIMIT': 'Our own per-visitor rate limit',
+    'LS-PREP-FAIL': 'Copy into R2 failed',
+    'LS-PREP-RANGE': 'Source ignored a ranged request during a copy',
+    'LS-UNHANDLED': 'Worker crashed (a bug)',
+    'LS-CRON-FAIL': 'Background job crashed (a bug)',
+    'LS-LOG-SAMPLED': 'Error storm: the rest of that minute was counted, not logged',
+  };
+  const meaning = (code)=> String(code || '').split(', ').map(c=> CODES[c] || (/^LS-HTTP-/.test(c) ? `HTTP ${c.slice(8)} error` : '')).filter(Boolean).join(' · ');
+  const enc = encodeURIComponent;
+  const fmtTime = (iso)=> new Date(iso).toLocaleString('en-SG', {day:'numeric', month:'short', hour:'2-digit', minute:'2-digit', second:'2-digit'});
+  let mirrorRows = [];
+  const galleryName = (source)=> (mirrorRows.find(r=> r.source === source) || {}).name || '';
+  const galleryLink = (source, text)=>{
+    const a = el('a', 'gal', text || galleryName(source) || source);
+    const provider = (mirrorRows.find(r=> r.source === source) || {}).provider || 'drive';
+    a.href = `/?provider=${enc(provider)}&source=${enc(source)}`;
+    a.target = '_blank'; a.rel = 'noopener';
+    return a;
+  };
+
+  // ---------- sections: #health, #errors, #mirror, #downloads ----------
+  const SECTIONS = ['health', 'errors', 'mirror', 'downloads'];
+  let section = 'health', downloadsLoaded = false;
+  function showSection(name){
+    section = SECTIONS.includes(name) ? name : 'health';
+    $('nav').querySelectorAll('[data-go]').forEach(b=> b.setAttribute('aria-selected', String(b.dataset.go === section)));
+    document.querySelectorAll('[data-section]').forEach(p=> { p.hidden = p.dataset.section !== section; });
+    showErr('');
+    refreshSection();
+  }
+  function refreshSection(){
+    const fail = (e)=> showErr(`Failed to load: ${e.message}`);
+    if(section === 'health') loadHealth().catch(fail);
+    else if(section === 'errors') loadErrors(true).catch(fail);
+    else if(section === 'mirror') loadMirrors();
+    else if(!downloadsLoaded){
+      downloadsLoaded = true;
+      loadStats().catch(fail);
+      load(true);
+    }
+  }
+  $('nav').addEventListener('click', (e)=>{
+    const b = e.target.closest('[data-go]');
+    if(!b) return;
+    if(location.hash === `#${b.dataset.go}`) showSection(b.dataset.go);
+    else location.hash = b.dataset.go;
+  });
+  window.addEventListener('hashchange', ()=> showSection(location.hash.slice(1)));
+
+  // ---------- health ----------
+  function tile(n, label, note, tone){
+    const box = el('div', 'stat');
+    box.append(el('div', 'n', n), el('div', 'l', label));
+    if(note) box.append(el('div', `note ${tone || ''}`, note));
+    return box;
+  }
+
+  async function loadHealth(){
+    const [s, rows] = await Promise.all([api('/api/admin/errors/summary'), api('/api/admin/mirrors').catch(()=> mirrorRows)]);
+    mirrorRows = rows;
+    const live = rows.filter(r=> !r.paused && !r.expired_at);
+    const ready = live.filter(r=> r.last_run && r.files && r.ready >= r.files);
+    const capped = live.filter(r=> r.last_error === 'LS-DRV-FILE' && !(r.files && r.ready >= r.files));
+    const copying = live.length - ready.length;
+    $('navErrCount').textContent = s.server24 + s.client24 ? String(s.server24 + s.client24) : '';
+    $('health').replaceChildren(
+      tile(s.server24, 'Server errors · 24 h', `${s.week} in 7 days`),
+      tile(s.client24, 'Client reports · 24 h', s.client24 ? 'Reports visitors were shown' : 'No visitor saw an error', s.client24 ? 'warn' : 'ok'),
+      tile(s.capped1h, 'Drive cap · last hour', s.capped1h ? 'Google is capping downloads' : 'No cap errors', s.capped1h ? 'warn' : 'ok'),
+      tile(copying, 'Galleries copying', capped.length ? `${capped.length} waiting on Google's cap` : 'None blocked', capped.length ? 'warn' : ''),
+      tile(ready.length, 'Galleries in R2', `of ${live.length} active`),
+    );
+    drawChart(s.hourly);
+
+    // codes table
+    const codes = $('codes');
+    codes.replaceChildren(header(['Code', 'Meaning', 'Source', 'Count', 'Last seen']));
+    const tb = el('tbody');
+    s.byCode.forEach(r=>{
+      const tr = el('tr', 'clickable');
+      tr.title = 'Show these in the error console';
+      tr.append(td(el('span', 'badge bad', r.code)), el('td', '', meaning(r.code)),
+        td(el('span', r.origin === 'client' ? 'badge cyan' : 'badge', r.origin)), el('td', 'mono', r.n), el('td', 'mono', fmtTime(r.last)));
+      tr.addEventListener('click', ()=> openErrors(r.code.split(', ')[0], r.origin));
+      tb.append(tr);
+    });
+    codes.append(tb);
+    if(!s.byCode.length){ const cap = el('caption'); cap.append(el('div', 'empty', 'No errors in the last 24 hours.')); codes.append(cap); }
+
+    // galleries not fully in R2, worst first
+    const att = $('attention');
+    att.replaceChildren(header(['Gallery', 'In R2', 'Problem', 'Next try']));
+    const tb2 = el('tbody');
+    live.filter(r=> !(r.last_run && r.files && r.ready >= r.files))
+      .sort((a, b)=> (b.failed || 0) - (a.failed || 0) || String(a.added_at).localeCompare(String(b.added_at)))
+      .slice(0, 15)
+      .forEach(r=>{
+        const tr = el('tr');
+        const problem = !r.last_run ? el('span', 'badge', 'Queued')
+          : r.failed ? el('span', 'badge warn', `${r.failed} failing · ${r.last_error || ''}`)
+          : el('span', 'badge cyan', 'Copying');
+        const when = new Date(r.next_check);
+        tr.append(td(galleryLink(r.source, r.name)), el('td', 'mono', r.last_run ? `${r.ready} / ${r.files}` : '—'), td(problem),
+          el('td', 'mono', when <= new Date() ? 'Next run' : fmtTime(r.next_check)));
+        tb2.append(tr);
+      });
+    att.append(tb2);
+    if(!tb2.children.length){ const cap = el('caption'); cap.append(el('div', 'empty', 'Every active gallery is fully in R2.')); att.append(cap); }
+  }
+
+  // Errors per hour: one series (server + client), so no legend; the tooltip splits it.
+  const SVG = 'http://www.w3.org/2000/svg';
+  let lastHourly = null;
+  function svgEl(tag, attrs){ const e = document.createElementNS(SVG, tag); for(const k in attrs) e.setAttribute(k, attrs[k]); return e; }
+  function niceMax(v){ if(v <= 4) return 4; const p = 10 ** Math.floor(Math.log10(v)); return [1, 2, 5, 10].map(m=> m * p).find(m=> m >= v); }
+  function drawChart(hourly){
+    lastHourly = hourly;
+    const box = $('chart');
+    box.replaceChildren();
+    const W = Math.max(box.clientWidth, 280), H = 180, L = 32, B = 22, T = 8;
+    const totals = hourly.map(h=> h.server + h.client);
+    const max = niceMax(Math.max(...totals));
+    const step = (W - L) / hourly.length, plotH = H - B - T;
+    const y = (v)=> T + plotH - (v / max) * plotH;
+    const peak = Math.max(...totals), peakAt = hourly[totals.indexOf(peak)];
+    const hourLabel = (iso)=> new Date(iso).toLocaleTimeString('en-SG', {hour:'2-digit', minute:'2-digit', hour12:false});
+    const sum = totals.reduce((a, b)=> a + b, 0);
+    $('chartNote').textContent = sum ? `${sum} total · peak ${peak} at ${hourLabel(peakAt.hour)}` : 'No errors';
+    const svg = svgEl('svg', {viewBox: `0 0 ${W} ${H}`, role: 'img',
+      'aria-label': sum ? `${sum} errors in the last 24 hours, peak ${peak} at ${hourLabel(peakAt.hour)}` : 'No errors in the last 24 hours'});
+    [0, max / 2, max].forEach((v, i)=>{
+      svg.append(svgEl('line', {x1: L, x2: W, y1: y(v), y2: y(v), class: i ? 'grid' : 'base'}));
+      const t = svgEl('text', {x: L - 6, y: y(v) + 3.5, 'text-anchor': 'end'}); t.textContent = String(v); svg.append(t);
+    });
+    const tip = el('div', 'tip'); tip.hidden = true;
+    hourly.forEach((h, i)=>{
+      const x = L + i * step, w = Math.max(step - 2, 1), v = totals[i];   // 2px surface gap between bars
+      const g = svgEl('g', {class: 'col'});
+      g.append(svgEl('rect', {class: 'band', x, y: T, width: step, height: plotH}));
+      if(v){
+        const top = y(v), r = Math.min(4, w / 2, (T + plotH - top));   // 4px rounded data end, square at the baseline
+        g.append(svgEl('path', {class: 'bar', d: `M${x + 1},${T + plotH} V${top + r} Q${x + 1},${top} ${x + 1 + r},${top} H${x + 1 + w - r} Q${x + 1 + w},${top} ${x + 1 + w},${top + r} V${T + plotH} Z`}));
+      }
+      const hit = svgEl('rect', {x, y: 0, width: step, height: H, fill: 'transparent'});
+      g.append(hit);
+      g.addEventListener('mouseenter', ()=>{
+        tip.replaceChildren(el('b', '', `${hourLabel(h.hour)}–${hourLabel(new Date(Date.parse(h.hour) + 3600e3).toISOString())}`),
+          document.createTextNode(` · ${v} error${v === 1 ? '' : 's'}${v ? ` (${h.server} server, ${h.client} client)` : ''}`));
+        tip.hidden = false;
+        tip.style.left = `${Math.min(Math.max(x + step / 2, 90), W - 90)}px`;
+        tip.style.top = `${v ? y(v) : T + plotH}px`;
+      });
+      g.addEventListener('mouseleave', ()=> { tip.hidden = true; });
+      svg.append(g);
+      if(i % 6 === 0 || i === hourly.length - 1){
+        const t = svgEl('text', {x: x + step / 2, y: H - 6, 'text-anchor': 'middle'}); t.textContent = hourLabel(h.hour); svg.append(t);
+      }
+    });
+    box.append(svg, tip);
+  }
+  let resizeTimer = null;
+  window.addEventListener('resize', ()=>{ clearTimeout(resizeTimer); resizeTimer = setTimeout(()=> { if(lastHourly && section === 'health') drawChart(lastHourly); }, 150); });
+
+  // ---------- error console ----------
+  let eOrigin = '', eItems = [], eTotal = 0, eTimer = null, eLoaded = 0;
+  const openIds = new Set();
+
+  function openErrors(q, origin){
+    $('eq').value = q || '';
+    eOrigin = origin || '';
+    $('originTabs').querySelectorAll('.tab').forEach(t=> t.setAttribute('aria-selected', String(t.dataset.origin === eOrigin)));
+    if(location.hash === '#errors') showSection('errors'); else location.hash = 'errors';
+  }
+
+  async function loadErrors(reset){
+    if(!mirrorRows.length) api('/api/admin/mirrors').then(r=> { mirrorRows = r; renderErrors(); }).catch(()=>{});
+    const q = $('eq').value.trim();
+    const offset = reset ? 0 : eItems.length;
+    // A refresh reloads everything already shown, so open rows and "load more" pages stay put.
+    const limitN = reset ? Math.max(100, Math.min(eLoaded, 500)) : 100;
+    const data = await api(`/api/admin/errors?q=${enc(q)}&origin=${eOrigin}&limit=${limitN}&offset=${offset}`);
+    eItems = reset ? data.items : eItems.concat(data.items);
+    eTotal = data.total;
+    eLoaded = eItems.length;
+    $('live').textContent = `Live · ${new Date().toLocaleTimeString('en-SG', {hour:'2-digit', minute:'2-digit', second:'2-digit'})}`;
+    renderErrors();
+  }
+
+  function detailRow(r){
+    const tr = el('tr', 'detail');
+    const cell = el('td'); cell.colSpan = 7;
+    const kv = el('dl', 'kv');
+    const add = (k, v)=>{ if(v === null || v === undefined || v === '') return; kv.append(el('dt', '', k)); const dd = el('dd'); dd.append(v); kv.append(dd); };
+    add('Time', `${fmtTime(r.ts)}  (${r.ts} UTC)`);
+    add('Code', `${r.code}${meaning(r.code) ? ` — ${meaning(r.code)}` : ''}`);
+    if(r.ref){
+      const span = el('span', '', r.ref);
+      r.ref.split(',').forEach(ref=>{
+        const b = el('button', 'btn', `All with ${ref}`); b.type = 'button';
+        b.addEventListener('click', (e)=> { e.stopPropagation(); openErrors(ref, ''); });
+        span.append(b);
+      });
+      add('Ref', span);
+    }
+    add('HTTP status', r.status === null ? '' : String(r.status));
+    add('Where', r.path || '');
+    if(r.gallery){
+      const span = el('span');
+      span.append(galleryLink(r.gallery), ` (${r.gallery})`);
+      add('Gallery', span);
+    }
+    // For a client report, context is the gallery name the browser had; skip it when it's already shown above.
+    if(!(r.origin === 'client' && r.gallery && r.context === galleryName(r.gallery))){
+      add(r.origin === 'client' ? 'Gallery name' : 'Details', r.context || '');
+    }
+    add('Visitor', r.ip_hash ? `IP hash ${r.ip_hash}` : '');
+    cell.append(kv);
+    if(r.report){
+      cell.append(el('pre', 'report', r.report));
+      const copy = el('button', 'btn', 'Copy report'); copy.type = 'button';
+      copy.addEventListener('click', (e)=>{
+        e.stopPropagation();
+        navigator.clipboard.writeText(r.report).then(()=> { copy.textContent = 'Copied'; setTimeout(()=> copy.textContent = 'Copy report', 1500); }).catch(()=>{});
+      });
+      cell.append(copy);
+    }
+    tr.append(cell);
+    return tr;
+  }
+
+  function renderErrors(){
+    const table = $('errors');
+    table.replaceChildren(header(['Time', 'Source', 'Code', 'Ref', 'Where', 'Gallery', 'Details']));
+    const tbody = el('tbody');
+    eItems.forEach(r=>{
+      const tr = el('tr', 'clickable');
+      tr.setAttribute('aria-expanded', String(openIds.has(r.id)));
+      if(openIds.has(r.id)) tr.classList.add('open');
+      const gal = r.gallery ? el('td', 'gal', galleryName(r.gallery) || r.gallery) : el('td', 'dim', '—');
+      const details = r.origin === 'client' ? (r.report || '').split('\n').find(l=> l.startsWith('Files:')) || '' : r.context || '';
+      const where = el('td', 'mono where', r.path || '—');
+      if(r.path) where.title = r.path;
+      const ctx = el('td', 'ctx'); ctx.append(el('span', '', details));
+      tr.append(el('td', 'mono', fmtTime(r.ts)), td(el('span', r.origin === 'client' ? 'badge cyan' : 'badge', r.origin)),
+        td(el('span', 'badge bad', r.code)), el('td', 'mono', r.ref || '—'), where, gal, ctx);
+      tr.addEventListener('click', ()=>{ if(openIds.has(r.id)) openIds.delete(r.id); else openIds.add(r.id); renderErrors(); });
+      tbody.append(tr);
+      if(openIds.has(r.id)) tbody.append(detailRow(r));
+    });
+    table.append(tbody);
+    if(!eItems.length){ const cap = el('caption'); cap.append(el('div', 'empty', $('eq').value.trim() ? 'No errors match.' : 'No errors logged yet.')); table.append(cap); }
+    $('ecount').textContent = `${eItems.length} of ${eTotal}`;
+    $('emore').hidden = eItems.length >= eTotal;
+  }
+
+  $('originTabs').addEventListener('click', (e)=>{
+    const tab = e.target.closest('.tab');
+    if(!tab) return;
+    $('originTabs').querySelectorAll('.tab').forEach(t=> t.setAttribute('aria-selected', String(t === tab)));
+    eOrigin = tab.dataset.origin;
+    eLoaded = 0;
+    loadErrors(true).catch(e=> showErr(`Failed to load: ${e.message}`));
+  });
+  $('eq').addEventListener('input', ()=>{
+    clearTimeout(eTimer);
+    eTimer = setTimeout(()=> { eLoaded = 0; loadErrors(true).catch(e=> showErr(`Failed to load: ${e.message}`)); }, 250);
+  });
+  $('emore').addEventListener('click', ()=> loadErrors(false).catch(e=> showErr(`Failed to load: ${e.message}`)));
+
+  // Keep whatever section is open current: errors every 30 s, the rest every 60 s.
+  let ticks = 0;
+  setInterval(()=>{
+    ticks++;
+    const visible = !document.hidden;
+    $('live').classList.toggle('paused', !visible);
+    if(!visible) return;
+    if(section === 'errors') loadErrors(true).catch(()=>{});
+    else if(ticks % 2 === 0 && (section === 'health' || section === 'mirror')) refreshSection();
+  }, 30000);
+
+  showSection(location.hash.slice(1));
 })();
 </script>
 </body>

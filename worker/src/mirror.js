@@ -3,7 +3,8 @@
 // source tolerates; visitors are then served from R2 and never wait on (or use
 // up) Google Drive's burst throttling and per-file download limits. Files that
 // were never prepared still fall back to the source, as before.
-import { HttpError, LuxError, describe, guessType, isVideo } from "./util.js";
+import { HttpError, LuxError, annotateError, describe, guessType, isVideo } from "./util.js";
+import { flushErrors } from "./errorlog.js";
 
 // Files bigger than one part are copied with an R2 multipart upload: one ranged
 // download per part, each finished part recorded in D1 (mirror_uploads). A copy
@@ -167,9 +168,8 @@ export async function prepareFile(env, provider, providerName, { ref, name, vide
         result[part] = "copied";
       }
     } catch (err) {
-      const d = describe(err, `prepare ${part} ${name}`);
-      // describe() labels non-HTTP errors as a zip failure; here it's a cut or failed copy.
-      result[part] = err instanceof HttpError ? d : { ...d, code: "LS-PREP-FAIL", message: String(err?.message || err) };
+      const d = describe(err, `prepare ${part} ${name} (${ref})`, "LS-PREP-FAIL");
+      result[part] = err instanceof HttpError ? d : { ...d, message: String(err?.message || err) };
     }
   }
   return result;
@@ -196,7 +196,8 @@ export function prepareResponse(env, ctx, provider, providerName, file) {
       return send({ done: true, parts });
     })
     .catch((err) => send({ done: true, error: err instanceof HttpError ? err.detail : String(err) }))
-    .finally(() => writer.close().catch(() => {}));
+    .finally(() => writer.close().catch(() => {}))
+    .then(() => flushErrors(env));
   ctx.waitUntil(work);
   return new Response(readable, { headers: { "Content-Type": "application/x-ndjson", "Cache-Control": "no-store" } });
 }
@@ -359,6 +360,7 @@ export async function runMirror(env, providers, { budgetMs = 4 * MINUTE, maxFile
       ({ files } = await provider.listGallery(env, g.source));
     } catch (err) {
       const d = describe(err, `mirror list ${g.provider}/${g.source}`);
+      annotateError(d.ref, { gallery: g.source, path: "cron mirror" });
       await setGallery(env, g, { last_run: iso(), last_error: d.code, next_check: iso(Date.now() + 60 * MINUTE) });
       continue;
     }
@@ -384,7 +386,9 @@ export async function runMirror(env, providers, { budgetMs = 4 * MINUTE, maxFile
         capped = 0;
       } else {
         failed++;
-        lastError = Object.values(parts).find((v) => !OK_PARTS.includes(v))?.code || "LS-PREP-FAIL";
+        const bad = Object.values(parts).find((v) => !OK_PARTS.includes(v));
+        lastError = bad?.code || "LS-PREP-FAIL";
+        annotateError(bad?.ref, { gallery: g.source, path: "cron mirror" });
         capped = lastError === "LS-DRV-FILE" ? capped + 1 : 0;
         if (capped >= CAP_STREAK) { complete = false; break; }
       }

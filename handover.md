@@ -1,6 +1,6 @@
 # Handover: luxsync-v3
 
-_Last updated: 2026-11-23_
+_Last updated: 2026-11-24_
 
 ## Your next steps
 
@@ -53,7 +53,8 @@ Since 2026-11-22, Google's per-file cap (`LS-DRV-FILE`) has hit most files in ~2
 
 ## Current state
 
-- **v0.16.2** on `main`, deployed by Workers Builds, served at `luxsync-v3.thebooleanjulian.dev` and `luxsync-v3.accurova.com`. The Worker serves previews, downloads and zips from the R2 mirror ([`worker/src/mirror.js`](worker/src/mirror.js)) and falls back to Drive.
+- **v0.17.0** on `main`, deployed by Workers Builds, served at `luxsync-v3.thebooleanjulian.dev` and `luxsync-v3.accurova.com`.
+- **Debugging:** [`/admin#errors`](https://luxsync-v3.accurova.com/admin#errors) is the error console: every server error and every error report a client was shown. Paste a client's `Ref` into its search. [`/admin#health`](https://luxsync-v3.accurova.com/admin#health) shows what's failing now. The Worker serves previews, downloads and zips from the R2 mirror ([`worker/src/mirror.js`](worker/src/mirror.js)) and falls back to Drive.
 - The mirror copies every opened gallery via a cron job every 5 min. Originals expire 30 days after the last open; thumbnails and previews never do. Galleries and their status are listed on [`/admin`](https://luxsync-v3.thebooleanjulian.dev/admin).
 
 ## What changed (2026-11-20)
