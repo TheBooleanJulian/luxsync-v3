@@ -53,8 +53,12 @@
   // IP_HASH_SALT, DROPBOX_*) are set with `npx wrangler secret put NAME`.
   "vars": { "FOLDER_CACHE_TTL_SECONDS": "600" },
 
-  // Production domain. The Cache API (zip progress) only works on custom
-  // domains. Overrides the *.thebooleanjulian.dev wildcard A record to Zeabur
-  // for this host; rollback = remove this route and redeploy.
-  "routes": [{ "pattern": "luxsync-v3.thebooleanjulian.dev", "custom_domain": true }]
+  // Production domains. The Cache API (zip progress) only works on custom
+  // domains. Each overrides its zone's wildcard A record to Zeabur
+  // (*.thebooleanjulian.dev, *.accurova.com) for this host; rollback = remove
+  // the route and redeploy.
+  "routes": [
+    { "pattern": "luxsync-v3.thebooleanjulian.dev", "custom_domain": true },
+    { "pattern": "luxsync-v3.accurova.com", "custom_domain": true }
+  ]
 }
