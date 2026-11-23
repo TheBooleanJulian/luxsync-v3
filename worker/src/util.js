@@ -23,6 +23,45 @@ export class HttpError extends Error {
   }
 }
 
+// ---------- error console ----------
+// Every LuxError and describe() also lands in this queue, and
+// errorlog.flushErrors() writes it to D1 (error_log, shown in /admin) at the
+// end of a request, zip, prepare or cron run. It's a plain array, not a
+// promise or lock, so a cancelled request can't wedge it (see the note at
+// the bottom of this file). Entries carry their own context, so it doesn't
+// matter which request in the isolate flushes them.
+const QUEUE_MAX = 500;
+// A throttling storm (e.g. Google refusing thumbnails) can throw hundreds of
+// errors a minute; past this many server errors per minute per isolate, the
+// rest are counted and logged as one LS-LOG-SAMPLED row instead.
+const PER_MINUTE = 60;
+let windowStart = 0, inWindow = 0, skipped = 0;
+export const errorQueue = [];
+
+export function recordError(entry, now = Date.now()) {
+  if (now - windowStart >= 60_000) {
+    if (skipped) {
+      errorQueue.push({ ts: new Date(windowStart + 60_000).toISOString(), origin: "server", code: "LS-LOG-SAMPLED",
+        context: `${skipped} more server errors in the minute from ${new Date(windowStart).toISOString()} were not logged` });
+    }
+    windowStart = now; inWindow = 0; skipped = 0;
+  }
+  if (entry.origin !== "client" && ++inWindow > PER_MINUTE) { skipped++; return; }
+  errorQueue.push({ ts: new Date(now).toISOString(), origin: "server", ...entry });
+  if (errorQueue.length > QUEUE_MAX) errorQueue.splice(0, errorQueue.length - QUEUE_MAX);
+}
+
+/** Add details (path, gallery, where it happened) to a queued error by its ref. */
+export function annotateError(ref, fields) {
+  const e = ref && errorQueue.find((x) => x.ref === ref);
+  if (!e) return;
+  for (const [k, v] of Object.entries(fields)) {
+    if (!v) continue;
+    if (k === "context") e.context = e.context ? `${v} · ${e.context}` : v;
+    else if (!e[k]) e[k] = v;
+  }
+}
+
 /** HttpError whose detail is {code, message, ref}. The ref is logged next to
  * the details so a visitor's screenshot can be matched to the exact log line. */
 export class LuxError extends HttpError {
@@ -30,6 +69,7 @@ export class LuxError extends HttpError {
     const ref = randomRef();
     super(status, { code, message: MESSAGES[code], ref });
     console.warn(`${code} ref=${ref} status=${status} ${context}`);
+    recordError({ code, ref, status, context });
   }
 }
 
@@ -38,19 +78,24 @@ function randomRef() {
   return [...b].map((x) => x.toString(16).padStart(2, "0")).join("").toUpperCase();
 }
 
-/** {code, message, ref} for any thrown value, logging the ones that weren't already a LuxError. */
-export function describe(exc, context = "") {
-  if (exc instanceof LuxError) return exc.detail;
+/** {code, message, ref} for any thrown value, logging the ones that weren't
+ * already a LuxError. `fallback` is the code for a non-HTTP error. */
+export function describe(exc, context = "", fallback = "LS-ZIP-FAIL") {
+  if (exc instanceof LuxError) {
+    annotateError(exc.detail.ref, { context });
+    return exc.detail;
+  }
   const ref = randomRef();
   let code, message;
   if (exc instanceof HttpError) {
     code = `LS-HTTP-${exc.status}`;
     message = typeof exc.detail === "string" ? exc.detail : exc.message;
   } else {
-    code = "LS-ZIP-FAIL";
+    code = fallback;
     message = MESSAGES[code];
   }
   console.warn(`${code} ref=${ref} ${context}: ${exc && exc.message}`);
+  recordError({ code, ref, status: exc?.status ?? null, context: `${context}: ${exc && exc.message}` });
   return { code, message, ref };
 }
 
