@@ -6,7 +6,7 @@
 
 **A premium, dependency-free photo gallery that turns any public Google Drive or Dropbox folder into a scrollable, previewable, downloadable client gallery.**
 
-![Version](https://img.shields.io/badge/version-0.16.1-00E5FF)
+![Version](https://img.shields.io/badge/version-0.16.2-00E5FF)
 ![Python](https://img.shields.io/badge/-Python-3776AB?logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/-FastAPI-009688?logo=fastapi&logoColor=white)
 ![Zeabur](https://img.shields.io/badge/-Zeabur-6C5CE7)
@@ -163,7 +163,7 @@ Differences from the Python app to know about: Drive request pacing is per Worke
 
 **R2 mirror (Worker only).** Google Drive throttles bursts and caps how often a public file can be downloaded per day, so serving clients live from Drive locks them out of popular files. The Worker therefore copies every gallery into R2 (`<provider>/{thumb,full,orig}/<file id>`, see `worker/src/mirror.js`) and serves previews, single downloads (resumable, with Range) and zips from there; the `X-LuxSync-Source: r2|source` response header shows which was used.
 
-- **Automatic:** opening a gallery registers it (D1 `mirror_galleries`, created on first use). A Cron Trigger every 5 minutes (`triggers` in `worker/wrangler.jsonc`) copies what's missing, up to 50 files per run. It retries failed files every 30 minutes, for example until Google lifts a per-file cap, and re-checks a finished gallery daily and whenever it's opened, so files uploaded later get picked up too.
+- **Automatic:** opening a gallery registers it (D1 `mirror_galleries`, created on first use). A Cron Trigger every 5 minutes (`triggers` in `worker/wrangler.jsonc`) copies what's missing, up to 50 files per run. Galleries that have never been copied go first. Failed files are retried every 30 minutes. After 3 `LS-DRV-FILE` errors in a row, a gallery is left alone for 3 hours, since Google's cap lasts hours and can hit most of an account at once. Each pass starts at a random point among the remaining files, so files that keep failing don't block the ones after them. The mirror re-checks a finished gallery daily and whenever it's opened, so files uploaded later get picked up too.
 - **Right now:** `/admin` → *Prepare gallery* copies a gallery immediately from your browser (two files at a time, with progress), for when you want it fully mirrored before sharing the link. The table below it lists every mirrored gallery with its status and a Pause/Resume switch.
 - Thumbnails and previews come from Google's image CDN (`lh3.googleusercontent.com`), with `drive.google.com/thumbnail` as fallback. Until a thumbnail is mirrored, the gallery page keeps the tile's shape and retries for about 3 minutes.
 - Files over 256 MB are copied in 256 MB parts (R2 multipart, one ranged download per part). Finished parts are recorded in D1 `mirror_uploads`, so a copy that outlives a cron run resumes where it stopped instead of restarting.
@@ -286,6 +286,7 @@ lists the failed files, and a `_MISSING_FILES.txt` inside the zip names them wit
 
 Summarised from commit history, most recent first. Versions follow `0.MINOR.PATCH` — MINOR for new features/architecture changes, PATCH for fixes.
 
+- **v0.16.2 — 2026-11-23 (mirror fairness)** — About 25 old BNI galleries opened overnight all hit Google's per-file cap (`LS-DRV-FILE`). Each 5-minute run spent its whole 50-file budget re-failing the first files of one gallery, so a new gallery (Fatui, opened 09:18) was never copied, and a client's photo download from it hit the cap. Now never-copied galleries go first, 3 cap errors in a row park a gallery for 3 hours, and each pass starts at a random file.
 - **v0.16.1 — 2026-11-23 (accurova.com domain)** — The Worker also answers on `luxsync-v3.accurova.com` (second custom domain, same Worker, R2 and D1). The logo links are now relative, so visitors stay on whichever domain they came in on. Social-preview tags still point at `luxsync-v3.thebooleanjulian.dev`.
 - **v0.16.0 — 2026-11-20 (local upload to R2)** — `tools/r2_push.py` uploads a gallery's originals to the R2 mirror from the local Drive for Desktop copy, for files Google's per-file cap (`LS-DRV-FILE`) blocks from both clients and the mirror. Standard library only, S3 multipart, so it has no size limit, unlike the 300 MB cap of `cf`/`wrangler` uploads. It reads a bucket-scoped R2 key from `secrets/r2-s3.env`. No Worker change.
 - **v0.15.2 — 2026-11-20 (zip skips blocked videos)** — A client's 8-video *Download All* ended with 0 of 8 files because the first video hit `LS-DRV-FILE` (Google's per-file download cap). A video that can't be opened at all is now skipped and listed in `_MISSING_FILES.txt`, like a photo; only a failure partway through a video still ends the zip.

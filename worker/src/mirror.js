@@ -332,13 +332,20 @@ export async function expireOriginals(env, { days = Number(env.MIRROR_EXPIRE_DAY
 /** One cron run. Galleries are leased (next_check pushed out) while being
  * worked on, so an overlapping run skips them. maxFiles keeps one run well
  * under the per-invocation subrequest limit (~10-20 per file worst case). */
-export async function runMirror(env, providers, { budgetMs = 4 * MINUTE, maxFiles = 50 } = {}) {
+// Google's per-file cap (LS-DRV-FILE) lasts hours and can hit most of an
+// account at once. After this many in a row, leave the gallery for CAP_WAIT
+// and move on, rather than spending the run (and more requests) on it.
+const CAP_STREAK = 3;
+const CAP_WAIT = 3 * 60 * MINUTE;
+
+export async function runMirror(env, providers, { budgetMs = 4 * MINUTE, maxFiles = 50, random = Math.random } = {}) {
   await ensureSchema(env);
   const stopAt = Date.now() + budgetMs;
   let left = maxFiles;
+  // Never-copied galleries first, so a backlog of failing ones can't starve a new one.
   const { results: due } = await env.DB.prepare(
     "SELECT provider, source FROM mirror_galleries WHERE paused = 0 AND expired_at IS NULL AND next_check <= ?" +
-      " ORDER BY next_check LIMIT 20",
+      " ORDER BY last_run IS NOT NULL, next_check LIMIT 20",
   ).bind(iso()).all();
 
   for (const g of due) {
@@ -359,10 +366,13 @@ export async function runMirror(env, providers, { budgetMs = 4 * MINUTE, maxFile
       .bind(g.provider, g.source).all();
     const done = new Set(results.map((r) => r.ref));
     let ready = files.filter((f) => done.has(f.id)).length;
-    let failed = 0, complete = true, lastError = null;
+    let failed = 0, complete = true, lastError = null, capped = 0;
+    // Start at a random point so files that keep failing at the top of the
+    // list don't block the ones after them run after run.
+    const todo = files.filter((f) => !done.has(f.id));
+    const start = Math.floor(random() * todo.length);
 
-    for (const f of files) {
-      if (done.has(f.id)) continue;
+    for (const f of [...todo.slice(start), ...todo.slice(0, start)]) {
       if (Date.now() >= stopAt || left <= 0) { complete = false; break; }
       left--;
       const name = f.name || f.id;
@@ -371,14 +381,21 @@ export async function runMirror(env, providers, { budgetMs = 4 * MINUTE, maxFile
       if (isReady(parts)) {
         await markDone(env, g.provider, g.source, f.id);
         ready++;
+        capped = 0;
       } else {
         failed++;
         lastError = Object.values(parts).find((v) => !OK_PARTS.includes(v))?.code || "LS-PREP-FAIL";
+        capped = lastError === "LS-DRV-FILE" ? capped + 1 : 0;
+        if (capped >= CAP_STREAK) { complete = false; break; }
       }
     }
-    // Unfinished: continue next run. Failures: retry in 30 min. Done: re-check
-    // daily (and right away whenever someone opens the gallery).
-    const next = !complete ? Date.now() : failed ? Date.now() + 30 * MINUTE : Date.now() + 24 * 60 * MINUTE;
+    // Capped by Google: wait hours. Unfinished: continue next run. Failures:
+    // retry in 30 min. Done: re-check daily (and right away whenever someone
+    // opens the gallery).
+    const next = capped >= CAP_STREAK ? Date.now() + CAP_WAIT
+      : !complete ? Date.now()
+      : failed ? Date.now() + 30 * MINUTE
+      : Date.now() + 24 * 60 * MINUTE;
     await setGallery(env, g, { last_run: iso(), files: files.length, ready, failed, last_error: lastError, next_check: iso(next) });
   }
 }
