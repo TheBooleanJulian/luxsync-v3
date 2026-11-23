@@ -210,6 +210,61 @@ test("runMirror retries failures later and finishes once the source recovers", a
   assert.equal(g.failed, 0);
 });
 
+test("runMirror leaves a gallery Google is capping for hours and moves on to the next", async () => {
+  const env = { CACHE: fakeR2(), DB: fakeD1() };
+  const capped = Array.from({ length: 6 }, (_, i) => ({ id: `capped0000${i}`, name: `${i}.jpg` }));
+  const failRefs = new Set(capped.map((f) => f.id));
+  const p = galleryProvider(capped, { failRefs });
+  await registerGallery(env, "drive", "folderAAAA", "Capped");
+  await runMirror(env, { drive: p }, { random: () => 0 });
+  let [g] = await listMirrors(env);
+  assert.equal(g.failed, 3, "stops after 3 caps in a row, not all 6");
+  assert.equal(g.last_error, "LS-DRV-FILE");
+  const in3h = Date.now() + 3 * 3600e3;
+  assert.ok(Math.abs(Date.parse(g.next_check) - in3h) < 60e3, "capped -> wait 3 hours");
+
+  // A second gallery in the same run still gets its turn.
+  const both = { drive: galleryProvider([{ id: "fresh123456", name: "a.jpg" }]) };
+  both.drive.listGallery = async (env, source) =>
+    source === "folderAAAA" ? { name: "Capped", files: capped } : { name: "Fresh", files: [{ id: "fresh123456", name: "a.jpg" }] };
+  const blocked = both.drive.openDownload;
+  both.drive.openDownload = async (env, ref, range) => {
+    if (failRefs.has(ref)) throw new LuxError(503, "LS-DRV-FILE", "blocked");
+    return blocked(env, ref, range);
+  };
+  await due(env);
+  await registerGallery(env, "drive", "folderBBBB", "Fresh");
+  await runMirror(env, { drive: both.drive }, { random: () => 0 });
+  const fresh = (await listMirrors(env)).find((x) => x.source === "folderBBBB");
+  assert.equal(fresh.ready, 1, "the capped gallery didn't use up the run");
+});
+
+test("runMirror copies a never-copied gallery before retrying failing ones", async () => {
+  const env = { CACHE: fakeR2(), DB: fakeD1() };
+  const p = galleryProvider([{ id: "photo123456", name: "a.jpg" }], { failRefs: new Set(["photo123456"]) });
+  await registerGallery(env, "drive", "folderOLDD", "Old");
+  await runMirror(env, { drive: p });                       // fails, gets a last_run
+  env.DB.raw.prepare("UPDATE mirror_galleries SET next_check = '2000-01-01T00:00:00.000Z'").run();
+  await registerGallery(env, "drive", "folderNEWW", "New");   // due later than the old one
+  const order = [];
+  const list = p.listGallery;
+  p.listGallery = async (env, source) => { order.push(source); return list(env, source); };
+  await runMirror(env, { drive: p }, { maxFiles: 1 });
+  assert.deepEqual(order, ["folderNEWW"], "new gallery first; budget then spent");
+});
+
+test("runMirror starts each pass at a random point so later files get tried", async () => {
+  const env = { CACHE: fakeR2(), DB: fakeD1() };
+  const files = Array.from({ length: 4 }, (_, i) => ({ id: `photo00000${i}`, name: `${i}.jpg` }));
+  const failRefs = new Set(["photo000000"]);
+  const p = galleryProvider(files, { failRefs });
+  await registerGallery(env, "drive", "folder1234", "Shoot");
+  await runMirror(env, { drive: p }, { maxFiles: 1, random: () => 0.99 });
+  const [g] = await listMirrors(env);
+  assert.equal(g.ready, 1, "started at the last file, not the failing first one");
+  assert.equal(env.CACHE.store.has("drive/orig/photo000003"), true);
+});
+
 test("runMirror stops at its per-run file budget and continues next run", async () => {
   const env = { CACHE: fakeR2(), DB: fakeD1() };
   const files = Array.from({ length: 5 }, (_, i) => ({ id: `photo00000${i}`, name: `${i}.jpg` }));
