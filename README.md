@@ -6,7 +6,7 @@
 
 **A premium, dependency-free photo gallery that turns any public Google Drive or Dropbox folder into a scrollable, previewable, downloadable client gallery.**
 
-![Version](https://img.shields.io/badge/version-0.16.0-00E5FF)
+![Version](https://img.shields.io/badge/version-0.16.1-00E5FF)
 ![Python](https://img.shields.io/badge/-Python-3776AB?logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/-FastAPI-009688?logo=fastapi&logoColor=white)
 ![Zeabur](https://img.shields.io/badge/-Zeabur-6C5CE7)
@@ -286,6 +286,7 @@ lists the failed files, and a `_MISSING_FILES.txt` inside the zip names them wit
 
 Summarised from commit history, most recent first. Versions follow `0.MINOR.PATCH` — MINOR for new features/architecture changes, PATCH for fixes.
 
+- **v0.16.1 — 2026-11-23 (accurova.com domain)** — The Worker also answers on `luxsync-v3.accurova.com` (second custom domain, same Worker, R2 and D1). The logo links are now relative, so visitors stay on whichever domain they came in on. Social-preview tags still point at `luxsync-v3.thebooleanjulian.dev`.
 - **v0.16.0 — 2026-11-20 (local upload to R2)** — `tools/r2_push.py` uploads a gallery's originals to the R2 mirror from the local Drive for Desktop copy, for files Google's per-file cap (`LS-DRV-FILE`) blocks from both clients and the mirror. Standard library only, S3 multipart, so it has no size limit, unlike the 300 MB cap of `cf`/`wrangler` uploads. It reads a bucket-scoped R2 key from `secrets/r2-s3.env`. No Worker change.
 - **v0.15.2 — 2026-11-20 (zip skips blocked videos)** — A client's 8-video *Download All* ended with 0 of 8 files because the first video hit `LS-DRV-FILE` (Google's per-file download cap). A video that can't be opened at all is now skipped and listed in `_MISSING_FILES.txt`, like a photo; only a failure partway through a video still ends the zip.
 - **v0.15.1 — 2026-11-20 (multi-zip Download All on phones)** — A client on Android Chrome got `LS-JOB-LOST` for 189 of 389 files. Download All sent every zip after the first from a 600 ms timer into a new tab, and mobile Chrome blocked those as pop-ups, so part 2 never reached the server. Now only part 1 starts with the tap; each later part waits in the panel for its own tap (*Download part 2 of 2*). A zip that never reaches the server gets a *Retry* button and a clearer `LS-JOB-LOST` message. Browser-only change.
