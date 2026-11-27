@@ -1,6 +1,6 @@
 # Handover: luxsync-v3
 
-_Last updated: 2026-11-24_
+_Last updated: 2026-11-27_
 
 ## Your next steps
 
@@ -50,6 +50,25 @@ Since 2026-11-22, Google's per-file cap (`LS-DRV-FILE`) has hit most files in ~2
   - **(a) Owner sign-in for the Worker (recommended):** the Worker downloads as `juliancheung@accurova.com` using a read-only Google sign-in (`drive.readonly`). Needs an OAuth client in the Google Cloud project that owns `DRIVE_API_KEY`, one sign-in by you, and a refresh token stored as a Worker secret. First check: confirm on one capped file that an owner download goes through.
   - **(b) Push from this PC at delivery:** run [`tools/r2_push.py`](tools/r2_push.py) on every gallery right after delivery (needs the R2 key from step 1). No new credentials in the Worker, but a manual step per gallery.
   - **(c) Keep as is:** the mirror retries capped galleries every 3 hours, and Claude pushes urgent files from K: by hand.
+
+### 4. Robustness: pick what to build next
+
+From the error console, 2026-11-23 to 27: 49 galleries, 8,902 of 8,907 files in R2. 815 Google-cap errors (two storms, 23 and 25 Nov), plus 3 client reports, all the cap. 1,106 "gone" errors, all from 5 files Google can't preview. Tick what you want, then tell Claude.
+
+- [ ] **No-preview files stop blocking (quick, no approval needed):** `.insv`/`.lrv` and two JPEGs have no Google thumbnail, so they never count as mirrored and are retried every 30 min forever (57% of the error log). Fix: a missing thumbnail means "no preview", and the file counts as done once its original is in R2.
+- [ ] **Tests in GitHub Actions (needs your OK, CI change):** there is no CI, so tests only run when Claude runs them locally. Add one small workflow that runs `npm test` on every PR.
+- [ ] **Turn on Workers Logs (needs your OK, config change):** one line in `worker/wrangler.jsonc` (`observability`). It keeps crash traces and every `console.warn` for a few days in the Cloudflare dashboard, covering anything the console misses.
+- [ ] **Owner sign-in to Drive (needs your OK, credentials):** decision 3(a) above. It's the root fix for the cap: brand-new galleries, expired galleries reopened, and cap storms all stop mattering. On 25 Nov a client hit the cap 1 minute after a gallery was first opened, before the mirror could copy it.
+- [ ] **Alert you when a client sees an error (needs your OK, new integration):** a Telegram message from a fleet bot when a client report arrives or a cap storm starts, instead of only finding it in `/admin`.
+- [ ] **Mirror at delivery, not first open:** today a gallery is copied only once someone opens it, so the first client is always served from Drive. Habit fix: press *Prepare* in [`/admin#mirror`](https://luxsync-v3.accurova.com/admin#mirror) before sharing a link. Automatic fix: needs owner sign-in.
+
+### 5. Your suggestion: link clients to the source Drive folder when something fails
+
+- [ ] **Pick one**, then tell Claude:
+  - **(a) Only for LuxSync's own failures (recommended):** show *Open the original folder in Google Drive* for zip, network, rate-limit and server errors. These are exactly the cases where Drive works when LuxSync doesn't. For Google's cap (`LS-DRV-FILE`), show *Try again in a few hours* instead, because Drive applies the same cap and the client would land on Google's own "quota exceeded" page. All 3 client reports so far were the cap.
+  - **(b) On every error:** simplest, but for the cap it sends clients to a second error page.
+  - **(c) Don't add it.**
+  - Trade-offs either way: downloads through Drive skip your email gate and download log. Each one also counts toward Google's per-file cap, making the next cap for everyone more likely. The folder ID is already in every LuxSync link, so nothing new is exposed.
 
 ## Current state
 
