@@ -3,7 +3,7 @@
 // source tolerates; visitors are then served from R2 and never wait on (or use
 // up) Google Drive's burst throttling and per-file download limits. Files that
 // were never prepared still fall back to the source, as before.
-import { HttpError, LuxError, annotateError, describe, guessType, isVideo } from "./util.js";
+import { HttpError, LuxError, annotateError, describe, discardError, guessType, isVideo } from "./util.js";
 import { flushErrors } from "./errorlog.js";
 
 // Files bigger than one part are copied with an R2 multipart upload: one ranged
@@ -168,6 +168,14 @@ export async function prepareFile(env, provider, providerName, { ref, name, vide
         result[part] = "copied";
       }
     } catch (err) {
+      // Google has no preview for some files (Insta360 .insv, .lrv proxies, a few
+      // JPEGs). That isn't a failure: the original is what matters, and retrying
+      // the preview every 30 minutes forever only fills the error log.
+      if (part !== "orig" && err instanceof LuxError && err.detail.code === "LS-DRV-GONE") {
+        discardError(err.detail.ref);
+        result[part] = "none";
+        continue;
+      }
       const d = describe(err, `prepare ${part} ${name} (${ref})`, "LS-PREP-FAIL");
       result[part] = err instanceof HttpError ? d : { ...d, message: String(err?.message || err) };
     }
@@ -225,6 +233,12 @@ const SCHEMA = [
      provider TEXT NOT NULL, ref TEXT NOT NULL, upload_id TEXT NOT NULL, size INTEGER NOT NULL,
      parts TEXT NOT NULL, updated_at TEXT NOT NULL,
      PRIMARY KEY (provider, ref))`,
+  // Watched folders (e.g. the year's deliverables folder): new gallery folders
+  // created inside one are enrolled automatically (runWatch).
+  `CREATE TABLE IF NOT EXISTS mirror_watch (
+     provider TEXT NOT NULL, source TEXT NOT NULL, name TEXT NOT NULL DEFAULT '',
+     added_at TEXT NOT NULL, last_scan TEXT, last_error TEXT, enrolled INTEGER NOT NULL DEFAULT 0,
+     PRIMARY KEY (provider, source))`,
 ];
 // Columns added after the table first shipped. ADD COLUMN fails once the
 // column exists (or the CREATE above already had it); that's expected.
@@ -251,7 +265,8 @@ const iso = (ms = Date.now()) => new Date(ms).toISOString();
 const MINUTE = 60_000;
 const DAY = 24 * 60 * MINUTE;
 const NEVER = "9999-12-31T00:00:00.000Z";   // next_check of an expired gallery: wait to be opened
-const OK_PARTS = ["cached", "copied"];
+// "none": Google has no preview of this file (see prepareFile).
+const OK_PARTS = ["cached", "copied", "none"];
 export const isReady = (parts) => Object.values(parts).every((v) => OK_PARTS.includes(v));
 
 /** Called when a gallery is opened: register it, restart its 30-day clock,
@@ -386,9 +401,9 @@ export async function runMirror(env, providers, { budgetMs = 4 * MINUTE, maxFile
         capped = 0;
       } else {
         failed++;
-        const bad = Object.values(parts).find((v) => !OK_PARTS.includes(v));
-        lastError = bad?.code || "LS-PREP-FAIL";
-        annotateError(bad?.ref, { gallery: g.source, path: "cron mirror" });
+        const bad = Object.values(parts).filter((v) => !OK_PARTS.includes(v));
+        lastError = bad[0]?.code || "LS-PREP-FAIL";
+        for (const b of bad) annotateError(b?.ref, { gallery: g.source, path: "cron mirror" });
         capped = lastError === "LS-DRV-FILE" ? capped + 1 : 0;
         if (capped >= CAP_STREAK) { complete = false; break; }
       }
@@ -401,5 +416,71 @@ export async function runMirror(env, providers, { budgetMs = 4 * MINUTE, maxFile
       : failed ? Date.now() + 30 * MINUTE
       : Date.now() + 24 * 60 * MINUTE;
     await setGallery(env, g, { last_run: iso(), files: files.length, ready, failed, last_error: lastError, next_check: iso(next) });
+  }
+}
+
+// ---------- watched folders: mirror at delivery ----------
+// Without this, a gallery is copied only once someone opens it, so the first
+// client is always served from Drive (and can hit Google's cap). A watched
+// folder is scanned every WATCH_EVERY, and each gallery folder created in it
+// is enrolled as if it had been opened, so it's in R2 before the link goes out.
+// Only folders created after the watch was added (less WATCH_GRACE) count:
+// enrolling a whole year of old galleries at once would set off Google's cap.
+const WATCH_EVERY = 15 * MINUTE;
+const WATCH_GRACE = DAY;
+
+export async function listWatches(env) {
+  await ensureSchema(env);
+  const { results } = await env.DB.prepare("SELECT * FROM mirror_watch ORDER BY added_at").all();
+  return results;
+}
+
+export async function addWatch(env, providerName, source, name, now = Date.now()) {
+  await ensureSchema(env);
+  await env.DB.prepare(
+    "INSERT INTO mirror_watch (provider, source, name, added_at) VALUES (?,?,?,?)" +
+      " ON CONFLICT(provider, source) DO UPDATE SET name = excluded.name, last_scan = NULL",
+  ).bind(providerName, source, String(name || "").slice(0, 200), iso(now)).run();
+}
+
+export async function removeWatch(env, providerName, source) {
+  await ensureSchema(env);
+  await env.DB.prepare("DELETE FROM mirror_watch WHERE provider = ? AND source = ?").bind(providerName, source).run();
+}
+
+/** Register a gallery found by a watch. Unlike registerGallery it never touches
+ * an existing row, so scanning doesn't keep restarting a gallery's 30-day clock. */
+async function enrolGallery(env, providerName, source, name, now) {
+  const known = await env.DB.prepare("SELECT 1 AS x FROM mirror_galleries WHERE provider = ? AND source = ?")
+    .bind(providerName, source).first();
+  if (known) return 0;
+  await env.DB.prepare(
+    "INSERT OR IGNORE INTO mirror_galleries (provider, source, name, added_at, next_check, last_opened) VALUES (?,?,?,?,?,?)",
+  ).bind(providerName, source, String(name || "").slice(0, 200), iso(now), iso(now), iso(now)).run();
+  return 1;
+}
+
+export async function runWatch(env, providers, now = Date.now()) {
+  await ensureSchema(env);
+  const { results: due } = await env.DB.prepare(
+    "SELECT * FROM mirror_watch WHERE last_scan IS NULL OR last_scan <= ?",
+  ).bind(iso(now - WATCH_EVERY)).all();
+  for (const w of due) {
+    const provider = providers[w.provider];
+    if (!provider?.listSubfolders) continue;
+    try {
+      const since = Date.parse(w.added_at) - WATCH_GRACE;
+      let added = 0;
+      for (const f of await provider.listSubfolders(env, w.source)) {
+        if (Date.parse(f.createdTime) >= since) added += await enrolGallery(env, w.provider, f.id, f.name, now);
+      }
+      await env.DB.prepare("UPDATE mirror_watch SET last_scan = ?, last_error = NULL, enrolled = enrolled + ? WHERE provider = ? AND source = ?")
+        .bind(iso(now), added, w.provider, w.source).run();
+    } catch (err) {
+      const d = describe(err, `watch ${w.name || w.source}`);
+      annotateError(d.ref, { gallery: w.source, path: "cron watch" });
+      await env.DB.prepare("UPDATE mirror_watch SET last_scan = ?, last_error = ? WHERE provider = ? AND source = ?")
+        .bind(iso(now), d.code, w.provider, w.source).run();
+    }
   }
 }

@@ -61,12 +61,14 @@ export async function recordClientReport(env, request, body) {
   const codes = list(body.codes, CODE_RE, 10);
   const refs = list(body.refs, REF_RE, 6);
   const source = SOURCE_RE.test(String(body.source ?? "")) ? String(body.source) : null;
+  const galleryName = clip(body.gallery_name, 200);
   recordError({
     origin: "client", code: codes.join(", ") || "LS-UNKNOWN", ref: refs.join(",") || null, status: null,
-    path: "browser", gallery: source, context: clip(body.gallery_name, 200), report,
+    path: "browser", gallery: source, context: galleryName, report,
     ip_hash: await hashIp(env, clientIp(request)),
   });
   await flushErrors(env);
+  return { codes, refs, gallery: source, galleryName, report };
 }
 
 /** Newest first. q matches ref, code, gallery, context or report text. */

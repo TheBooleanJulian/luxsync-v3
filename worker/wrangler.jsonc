@@ -49,6 +49,11 @@
   // galleries into R2 (src/mirror.js runMirror). Tables are created on first use.
   "triggers": { "crons": ["*/5 * * * *"] },
 
+  // Workers Logs: console output and crash traces, kept a few days in the
+  // dashboard (Workers -> luxsync-v3 -> Logs). The /admin error console is the
+  // first place to debug; this catches anything it misses.
+  "observability": { "enabled": true },
+
   // Plain-text vars. Secrets (DRIVE_API_KEY, ADMIN_PASSWORD, ADMIN_USERNAME,
   // IP_HASH_SALT, DROPBOX_*) are set with `npx wrangler secret put NAME`.
   "vars": { "FOLDER_CACHE_TTL_SECONDS": "600" },

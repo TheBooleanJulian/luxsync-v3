@@ -269,6 +269,7 @@ td.mono{font-size:11.5px;line-height:16px;font-weight:500;letter-spacing:0.02em;
 .nav .count{margin-left:6px;font:500 11px/14px var(--font-mono);letter-spacing:0;color:var(--ink-muted);}
 .panel .eyebrow + .table-wrap,.panel p + .table-wrap{margin-top:var(--space-3);}
 .panel .table-wrap{background:var(--bg);}
+.table-wrap.watches{margin-top:var(--space-3);}
 .panel-head{display:flex;justify-content:space-between;align-items:baseline;gap:var(--space-3);flex-wrap:wrap;}
 .hint{font:500 11.5px/16px var(--font-mono);color:var(--ink-muted);}
 .stat .note{font:500 11.5px/16px var(--font-mono);color:var(--ink-muted);margin-top:var(--space-1);}
@@ -317,6 +318,13 @@ pre.report{
   background:var(--surface-raised);border:1px solid var(--line);border-radius:var(--radius-md);
   font:500 11.5px/16px var(--font-mono);color:var(--ink);
 }
+.setup-list{list-style:none;display:grid;gap:var(--space-2);margin-top:var(--space-3);font-size:13px;line-height:18px;}
+.setup-list li{display:flex;gap:var(--space-3);align-items:center;flex-wrap:wrap;}
+.setup-list .hint{flex:1;min-width:200px;}
+.watch-row{display:flex;gap:var(--space-2);flex-wrap:wrap;margin-top:var(--space-3);}
+.watch-row input{flex:1;min-width:200px;width:auto;}
+#watches{min-width:600px;}
+#watches .btn{height:var(--control-sm);padding:0 var(--space-2);}
 @media (max-width: 640px){
   input[type="search"]{width:100%;}
   .tools{width:100%;}
@@ -363,6 +371,10 @@ pre.report{
       <p>Galleries the background mirror hasn't finished copying into R2. Until it has, those files come from Google Drive and can hit its limits.</p>
       <div class="table-wrap"><table id="attention"></table></div>
     </section>
+    <section class="panel">
+      <div class="eyebrow">Setup</div>
+      <ul class="setup-list" id="setup"></ul>
+    </section>
   </div>
 
   <!-- Errors: every server error plus the reports visitors were shown -->
@@ -397,6 +409,15 @@ pre.report{
       <ul class="prep-fails" id="prepFails"></ul>
     </div>
     <div class="table-wrap mirrors"><table id="mirrors"></table></div>
+  </section>
+  <section class="panel" aria-labelledby="watchTitle">
+    <div class="eyebrow" id="watchTitle">Mirror new galleries automatically</div>
+    <p>Add the folder you deliver galleries into (for example <span class="mono">#CLIENT_DELIVERABLES/2026</span>). Every 15 minutes LuxSync looks for new gallery folders inside it and copies them into R2, so they're ready before you send the link. Folders that were already there when you add it are left alone. Reading a private folder needs the owner sign-in (see Health → Setup).</p>
+    <form class="watch-row" id="watchForm">
+      <input type="url" id="watchUrl" required placeholder="Paste the Google Drive folder link" aria-label="Folder to watch">
+      <button class="btn primary" type="submit">Watch</button>
+    </form>
+    <div class="table-wrap watches"><table id="watches"></table></div>
   </section>
   </div>
 
@@ -537,7 +558,7 @@ pre.report{
   });
 
   // ---------- prepare gallery: mirror every file into R2, one request per file ----------
-  const OK_PARTS = ['cached', 'copied'];
+  const OK_PARTS = ['cached', 'copied', 'none'];   // none: Google has no preview of the file
   let prep = null;   // { gallery, files, failed: [{file, why}], busy }
   const mb = (n)=> (n / 1048576).toLocaleString('en-SG', {maximumFractionDigits: 0});
 
@@ -734,6 +755,7 @@ pre.report{
     'LS-PREP-RANGE': 'Source ignored a ranged request during a copy',
     'LS-UNHANDLED': 'Worker crashed (a bug)',
     'LS-CRON-FAIL': 'Background job crashed (a bug)',
+    'LS-DRV-AUTH': 'Owner sign-in to Google failed; used the public link instead',
     'LS-LOG-SAMPLED': 'Error storm: the rest of that minute was counted, not logged',
   };
   const meaning = (code)=> String(code || '').split(', ').map(c=> CODES[c] || (/^LS-HTTP-/.test(c) ? `HTTP ${c.slice(8)} error` : '')).filter(Boolean).join(' · ');
@@ -761,9 +783,9 @@ pre.report{
   }
   function refreshSection(){
     const fail = (e)=> showErr(`Failed to load: ${e.message}`);
-    if(section === 'health') loadHealth().catch(fail);
+    if(section === 'health'){ loadHealth().catch(fail); loadSetup(); }
     else if(section === 'errors') loadErrors(true).catch(fail);
-    else if(section === 'mirror') loadMirrors();
+    else if(section === 'mirror'){ loadMirrors(); loadWatches(); }
     else if(!downloadsLoaded){
       downloadsLoaded = true;
       loadStats().catch(fail);
@@ -891,6 +913,78 @@ pre.report{
   }
   let resizeTimer = null;
   window.addEventListener('resize', ()=>{ clearTimeout(resizeTimer); resizeTimer = setTimeout(()=> { if(lastHourly && section === 'health') drawChart(lastHourly); }, 150); });
+
+  // ---------- setup status (Health) ----------
+  async function loadSetup(){
+    let s;
+    try { s = await api('/api/admin/setup'); } catch(e){ return; }
+    const list = $('setup');
+    list.replaceChildren();
+    const row = (on, label, help, extra)=>{
+      const li = el('li');
+      li.append(el('span', on ? 'badge ok' : 'badge', on ? 'On' : 'Off'), el('strong', '', label), el('span', 'hint', help));
+      if(extra) li.append(extra);
+      list.append(li);
+    };
+    row(s.ownerAuth, 'Owner sign-in to Google Drive', s.ownerAuth
+      ? "Downloads run as the folders' owner, so Google's per-file cap doesn't apply."
+      : 'Off: downloads use the public link, which Google caps. Set up with tools/google_oauth.py (see handover.md).');
+    let test = null;
+    if(s.alerts){
+      test = el('button', 'btn', 'Send test alert'); test.type = 'button';
+      test.addEventListener('click', async ()=>{
+        test.disabled = true;
+        const res = await fetch('/api/admin/alerts/test', {method: 'POST'}).catch(()=> null);
+        test.textContent = res && res.ok ? 'Sent' : 'Failed';
+        setTimeout(()=> { test.textContent = 'Send test alert'; test.disabled = false; }, 3000);
+      });
+    }
+    row(s.alerts, 'Telegram alerts', s.alerts
+      ? 'You get a message when a client sees an error, Google starts capping, or the Worker crashes.'
+      : 'Off: set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID (see handover.md).', test);
+  }
+
+  // ---------- watched folders (Mirror) ----------
+  async function loadWatches(){
+    let rows;
+    try { rows = await api('/api/admin/watch'); } catch(e){ return; }
+    renderWatches(rows);
+  }
+  function renderWatches(rows){
+    const table = $('watches');
+    table.replaceChildren(header(['Folder', 'Watching since', 'Last scan', 'Galleries added', '']));
+    const tbody = el('tbody');
+    rows.forEach(w=>{
+      const tr = el('tr');
+      const a = el('a', 'gal', w.name || w.source);
+      a.href = `https://drive.google.com/drive/folders/${enc(w.source)}`; a.target = '_blank'; a.rel = 'noopener';
+      const scan = w.last_error ? el('span', 'badge warn', `Can't read · ${w.last_error}`)
+        : el('span', 'mono dim', w.last_scan ? fmtTime(w.last_scan) : 'Next run');
+      const rm = el('button', 'btn', 'Remove'); rm.type = 'button';
+      rm.addEventListener('click', async ()=>{
+        rm.disabled = true;
+        const res = await fetch('/api/admin/watch', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({source: w.source, remove: true})});
+        if(res.ok) renderWatches(await res.json()); else rm.disabled = false;
+      });
+      tr.append(td(a), el('td', 'mono', fmtTime(w.added_at)), td(scan), el('td', 'mono', w.enrolled), td(rm));
+      tbody.append(tr);
+    });
+    table.append(tbody);
+    if(!rows.length){ const cap = el('caption'); cap.append(el('div', 'empty', 'No folders watched yet.')); table.append(cap); }
+  }
+  $('watchForm').addEventListener('submit', async (e)=>{
+    e.preventDefault();
+    showErr('');
+    const res = await fetch('/api/admin/watch', {method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({link: $('watchUrl').value.trim()})}).catch(()=> null);
+    if(!res || !res.ok){
+      const d = res ? await res.json().catch(()=> ({})) : {};
+      showErr(`Couldn't watch that folder: ${typeof d.detail === 'string' ? d.detail : (res ? `HTTP ${res.status}` : 'network error')}`);
+      return;
+    }
+    $('watchUrl').value = '';
+    renderWatches(await res.json());
+  });
 
   // ---------- error console ----------
   let eOrigin = '', eItems = [], eTotal = 0, eTimer = null, eLoaded = 0;

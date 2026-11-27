@@ -10,6 +10,7 @@ const MESSAGES = {
   "LS-NET-CUT": "The connection to the source dropped mid-download.",
   "LS-SRC-EMPTY": "The source returned an empty file.",
   "LS-PREP-RANGE": "The source didn't return the requested part of a file while it was being copied.",
+  "LS-DRV-AUTH": "The server's Google sign-in failed, so it used the public link instead.",
   "LS-ZIP-FAIL": "The zip was interrupted before it finished.",
 };
 
@@ -49,6 +50,12 @@ export function recordError(entry, now = Date.now()) {
   if (entry.origin !== "client" && ++inWindow > PER_MINUTE) { skipped++; return; }
   errorQueue.push({ ts: new Date(now).toISOString(), origin: "server", ...entry });
   if (errorQueue.length > QUEUE_MAX) errorQueue.splice(0, errorQueue.length - QUEUE_MAX);
+}
+
+/** Drop a queued error that turned out to be expected (e.g. a file with no preview). */
+export function discardError(ref) {
+  const i = ref ? errorQueue.findIndex((x) => x.ref === ref) : -1;
+  if (i >= 0) errorQueue.splice(i, 1);
 }
 
 /** Add details (path, gallery, where it happened) to a queued error by its ref. */

@@ -42,37 +42,43 @@ Every dev → main PR shows **Workers Builds: luxsync-v3 — fail**. That's not 
   - **(b) Delete the dev trigger:** PRs show no Cloudflare check; the `main` build stays the real gate.
   - Where: [Workers → luxsync-v3 → Settings → Builds](https://dash.cloudflare.com/c580c4403524273d1bece674117472dd/workers/services/view/luxsync-v3/production/settings)
 
-### 3. Decide on the long-term fix for Google's download cap
+### 3. Turn on owner sign-in to Drive (the root fix for Google's cap)
 
-Since 2026-11-22, Google's per-file cap (`LS-DRV-FILE`) has hit most files in ~25 old BNI galleries and a new photo gallery (Fatui). The Worker downloads from Drive *anonymously* with an API key, and that's what Google caps. Your own Drive for Desktop reads the same files fine. As of v0.16.2 the mirror backs off capped galleries instead of starving new ones, but files only reach R2 when Google lets them through or when they're pushed from this PC.
+Built in v0.18.0 and waiting for your sign-in. Google caps *anonymous* downloads of a popular file (`LS-DRV-FILE`), and the Worker currently downloads anonymously with an API key. With your read-only sign-in it downloads as the folders' owner instead. If the sign-in ever fails, it quietly falls back to the API key.
 
-- [ ] **Pick one**, then tell Claude. Option (a) is security-sensitive, so Claude won't build it without your go-ahead.
-  - **(a) Owner sign-in for the Worker (recommended):** the Worker downloads as `juliancheung@accurova.com` using a read-only Google sign-in (`drive.readonly`). Needs an OAuth client in the Google Cloud project that owns `DRIVE_API_KEY`, one sign-in by you, and a refresh token stored as a Worker secret. First check: confirm on one capped file that an owner download goes through.
-  - **(b) Push from this PC at delivery:** run [`tools/r2_push.py`](tools/r2_push.py) on every gallery right after delivery (needs the R2 key from step 1). No new credentials in the Worker, but a manual step per gallery.
-  - **(c) Keep as is:** the mirror retries capped galleries every 3 hours, and Claude pushes urgent files from K: by hand.
+- [ ] **Google Cloud console**, in the project that owns `DRIVE_API_KEY`:
+  - [OAuth consent screen](https://console.cloud.google.com/apis/credentials/consent): user type **Internal**, so the sign-in doesn't expire after 7 days; scope `.../auth/drive.readonly`.
+  - [Credentials](https://console.cloud.google.com/apis/credentials) → *Create credentials* → *OAuth client ID* → **Desktop app**. Download the JSON and save it as [`secrets/google-oauth-client.json`](secrets/google-oauth-client.json).
+- [ ] **Sign in** from the repo root as `juliancheung@accurova.com`. It writes `secrets/luxsync-google-oauth.json`:
+  ```
+  python tools/google_oauth.py
+  ```
+- [ ] **Load it into the Worker**, from `worker/`:
+  ```
+  npx wrangler secret bulk ../secrets/luxsync-google-oauth.json
+  ```
+- [ ] **Check** [`/admin#health`](https://luxsync-v3.accurova.com/admin#health) → *Setup* shows owner sign-in **On**, then tell Claude. Claude will confirm on a capped file that it really downloads.
 
-### 4. Robustness: pick what to build next
+### 4. Turn on Telegram alerts
 
-From the error console, 2026-11-23 to 27: 49 galleries, 8,902 of 8,907 files in R2. 815 Google-cap errors (two storms, 23 and 25 Nov), plus 3 client reports, all the cap. 1,106 "gone" errors, all from 5 files Google can't preview. Tick what you want, then tell Claude.
+Built in v0.18.0 and off until these are set. You get a message when a client is shown an error (once per gallery per 30 min), when Google starts capping (once per 6 h), or when the Worker crashes (once per hour). It only sends, so a bot that polls elsewhere is unaffected.
 
-- [ ] **No-preview files stop blocking (quick, no approval needed):** `.insv`/`.lrv` and two JPEGs have no Google thumbnail, so they never count as mirrored and are retried every 30 min forever (57% of the error log). Fix: a missing thumbnail means "no preview", and the file counts as done once its original is in R2.
-- [ ] **Tests in GitHub Actions (needs your OK, CI change):** there is no CI, so tests only run when Claude runs them locally. Add one small workflow that runs `npm test` on every PR.
-- [ ] **Turn on Workers Logs (needs your OK, config change):** one line in `worker/wrangler.jsonc` (`observability`). It keeps crash traces and every `console.warn` for a few days in the Cloudflare dashboard, covering anything the console misses.
-- [ ] **Owner sign-in to Drive (needs your OK, credentials):** decision 3(a) above. It's the root fix for the cap: brand-new galleries, expired galleries reopened, and cap storms all stop mattering. On 25 Nov a client hit the cap 1 minute after a gallery was first opened, before the mirror could copy it.
-- [ ] **Alert you when a client sees an error (needs your OK, new integration):** a Telegram message from a fleet bot when a client report arrives or a cap storm starts, instead of only finding it in `/admin`.
-- [ ] **Mirror at delivery, not first open:** today a gallery is copied only once someone opens it, so the first client is always served from Drive. Habit fix: press *Prepare* in [`/admin#mirror`](https://luxsync-v3.accurova.com/admin#mirror) before sharing a link. Automatic fix: needs owner sign-in.
+- [ ] Pick the bot (any fleet bot, or a new one from [@BotFather](https://t.me/BotFather)) and **send it any message** so it may message you.
+- [ ] Get your chat ID from [@userinfobot](https://t.me/userinfobot).
+- [ ] From `worker/`, set both (each command prompts for the value, so it never lands in your shell history):
+  ```
+  npx wrangler secret put TELEGRAM_BOT_TOKEN
+  npx wrangler secret put TELEGRAM_CHAT_ID
+  ```
+- [ ] [`/admin#health`](https://luxsync-v3.accurova.com/admin#health) → *Setup* → **Send test alert**.
 
-### 5. Your suggestion: link clients to the source Drive folder when something fails
+### 5. Watch your deliverables folder (mirror at delivery)
 
-- [ ] **Pick one**, then tell Claude:
-  - **(a) Only for LuxSync's own failures (recommended):** show *Open the original folder in Google Drive* for zip, network, rate-limit and server errors. These are exactly the cases where Drive works when LuxSync doesn't. For Google's cap (`LS-DRV-FILE`), show *Try again in a few hours* instead, because Drive applies the same cap and the client would land on Google's own "quota exceeded" page. All 3 client reports so far were the cap.
-  - **(b) On every error:** simplest, but for the cap it sends clients to a second error page.
-  - **(c) Don't add it.**
-  - Trade-offs either way: downloads through Drive skip your email gate and download log. Each one also counts toward Google's per-file cap, making the next cap for everyone more likely. The folder ID is already in every LuxSync link, so nothing new is exposed.
+- [ ] In [`/admin#mirror`](https://luxsync-v3.accurova.com/admin#mirror) → *Mirror new galleries automatically*, paste the link of `#CLIENT_DELIVERABLES/2026` (and the 2027 one in January). New gallery folders in it are then copied within ~20 minutes, before you send the link. Do this after step 3: reading a private folder needs the owner sign-in.
 
 ## Current state
 
-- **v0.17.0** on `main`, deployed by Workers Builds, served at `luxsync-v3.thebooleanjulian.dev` and `luxsync-v3.accurova.com`.
+- **v0.18.0** on `main`, deployed by Workers Builds, served at `luxsync-v3.thebooleanjulian.dev` and `luxsync-v3.accurova.com`.
 - **Debugging:** [`/admin#errors`](https://luxsync-v3.accurova.com/admin#errors) is the error console: every server error and every error report a client was shown. Paste a client's `Ref` into its search. [`/admin#health`](https://luxsync-v3.accurova.com/admin#health) shows what's failing now. The Worker serves previews, downloads and zips from the R2 mirror ([`worker/src/mirror.js`](worker/src/mirror.js)) and falls back to Drive.
 - The mirror copies every opened gallery via a cron job every 5 min. Originals expire 30 days after the last open; thumbnails and previews never do. Galleries and their status are listed on [`/admin`](https://luxsync-v3.thebooleanjulian.dev/admin).
 
@@ -84,6 +90,14 @@ From the error console, 2026-11-23 to 27: 49 galleries, 8,902 of 8,907 files in 
 - **2026-11-23, v0.16.1:** second domain `luxsync-v3.accurova.com`.
 - **2026-11-23, v0.16.2:** the mirror copies never-copied galleries first, parks a gallery for 3 h after 3 cap errors in a row, and starts each pass at a random file.
 - **2026-11-23, Fatui National Gallery:** all 271 originals uploaded to R2 from K: after a client's photo hit the cap.
+- **2026-11-24, v0.17.0:** `/admin` dashboard (Health / Errors / Mirror / Downloads) with an error console, including the error reports clients see.
+- **2026-11-27, v0.18.0:**
+  - Files Google can't preview no longer block the mirror or flood the log.
+  - Clients' error box links to the original Drive folder when LuxSync itself failed, or says to wait a few hours for Google's cap.
+  - Watched folders (mirror at delivery).
+  - Owner sign-in and Telegram alerts (steps 3 and 4).
+  - Tests in GitHub Actions.
+  - Workers Logs on.
 
 ## Open questions / not done
 

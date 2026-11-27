@@ -30,6 +30,12 @@ CREATE TABLE IF NOT EXISTS mirror_galleries (
 CREATE TABLE IF NOT EXISTS mirror_files (
      provider TEXT NOT NULL, source TEXT NOT NULL, ref TEXT NOT NULL, done_at TEXT NOT NULL,
      PRIMARY KEY (provider, source, ref));
+-- Watched folders: new gallery folders created inside one are mirrored at
+-- delivery (mirror.js runWatch), not on first open.
+CREATE TABLE IF NOT EXISTS mirror_watch (
+     provider TEXT NOT NULL, source TEXT NOT NULL, name TEXT NOT NULL DEFAULT '',
+     added_at TEXT NOT NULL, last_scan TEXT, last_error TEXT, enrolled INTEGER NOT NULL DEFAULT 0,
+     PRIMARY KEY (provider, source));
 -- In-progress multipart copies of big originals (one row per file, deleted when done).
 CREATE TABLE IF NOT EXISTS mirror_uploads (
      provider TEXT NOT NULL, ref TEXT NOT NULL, upload_id TEXT NOT NULL, size INTEGER NOT NULL,
@@ -45,3 +51,6 @@ CREATE TABLE IF NOT EXISTS error_log (
      context TEXT, report TEXT, ip_hash TEXT);
 CREATE INDEX IF NOT EXISTS error_log_ts ON error_log (ts);
 CREATE INDEX IF NOT EXISTS error_log_ref ON error_log (ref);
+
+-- Telegram alert throttling (worker/src/alerts.js): when each kind of alert last went out.
+CREATE TABLE IF NOT EXISTS alert_state (key TEXT PRIMARY KEY, sent_at TEXT NOT NULL);
