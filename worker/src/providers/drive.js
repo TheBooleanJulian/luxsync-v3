@@ -1,5 +1,9 @@
 // Google Drive provider — reads public (link-shared) folders via a server-side
-// API key (env.DRIVE_API_KEY). Interface every provider implements:
+// API key (env.DRIVE_API_KEY). Optionally, downloads and watched-folder scans
+// run as the folders' owner instead (GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET /
+// GOOGLE_REFRESH_TOKEN, read-only; see tools/google_oauth.py): Google caps
+// anonymous downloads of a popular file, not its owner's.
+// Interface every provider implements:
 //   parseSource(url) · validateRef(ref) · listGallery(env, sourceId)
 //   getThumb(env, ref) / getFull(env, ref) -> {bytes, contentType}
 //   openDownload(env, ref, range?) -> upstream Response (200/206) with a body stream
@@ -24,11 +28,57 @@ export function validateRef(ref) {
   if (!DRIVE_ID_RE.test(ref || "")) throw new HttpError(400, "Invalid ID");
 }
 
-async function driveGet(env, path, params) {
-  if (!env.DRIVE_API_KEY) throw new HttpError(500, "Server is missing DRIVE_API_KEY");
+// ---- owner sign-in (optional) ----
+// The access token is cached per isolate as a plain value (not a shared
+// promise, which a cancelled request could leave pending). After a failed
+// refresh, owner auth is skipped for AUTH_RETRY_MS and the API key is used.
+const AUTH_RETRY_MS = 5 * 60_000;
+let ownerAccess = null;      // { token, expires }
+let ownerFailedUntil = 0;
+
+export const ownerAuthConfigured = (env) =>
+  !!(env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET && env.GOOGLE_REFRESH_TOKEN);
+
+async function ownerToken(env, { force = false } = {}) {
+  if (!force && ownerAccess && ownerAccess.expires > Date.now() + 60_000) return ownerAccess.token;
+  const res = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      client_id: env.GOOGLE_CLIENT_ID, client_secret: env.GOOGLE_CLIENT_SECRET,
+      refresh_token: env.GOOGLE_REFRESH_TOKEN, grant_type: "refresh_token",
+    }),
+  });
+  if (!res.ok) {
+    const reason = (await res.json().catch(() => ({}))).error || `HTTP ${res.status}`;
+    ownerAccess = null;
+    ownerFailedUntil = Date.now() + AUTH_RETRY_MS;
+    throw new LuxError(503, "LS-DRV-AUTH", `owner token refresh failed: ${reason}`);
+  }
+  const data = await res.json();
+  ownerAccess = { token: data.access_token, expires: Date.now() + (Number(data.expires_in) || 3600) * 1000 };
+  return ownerAccess.token;
+}
+
+/** Bearer header when owner sign-in is set up and working, else null (use the API key). */
+async function ownerHeaders(env, opts) {
+  if (!ownerAuthConfigured(env) || Date.now() < ownerFailedUntil) return null;
+  try {
+    return { Authorization: `Bearer ${await ownerToken(env, opts)}` };
+  } catch {
+    return null;   // already logged as LS-DRV-AUTH; fall back to the API key
+  }
+}
+
+async function driveGet(env, path, params, { owner = false } = {}) {
   const url = new URL(`https://www.googleapis.com/drive/v3/${path}`);
-  for (const [k, v] of Object.entries({ ...params, key: env.DRIVE_API_KEY })) url.searchParams.set(k, v);
-  const res = await fetch(url);
+  const headers = (owner && (await ownerHeaders(env))) || {};
+  if (!headers.Authorization) {
+    if (!env.DRIVE_API_KEY) throw new HttpError(500, "Server is missing DRIVE_API_KEY");
+    url.searchParams.set("key", env.DRIVE_API_KEY);
+  }
+  for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
+  const res = await fetch(url, { headers });
   if (res.status !== 200) {
     let detail = "Drive API request failed";
     try { detail = (await res.json()).error?.message || detail; } catch { /* keep default */ }
@@ -69,6 +119,25 @@ async function collectMedia(env, rootId) {
     }
   }
   return media;
+}
+
+/** Folders directly inside a watched folder, for mirror-at-delivery (mirror.js runWatch). */
+export async function listSubfolders(env, parentId) {
+  const q = `'${parentId}' in parents and mimeType = '${FOLDER_MIME}' and trashed = false`;
+  const all = [];
+  let pageToken = "";
+  do {
+    const params = { q, fields: "nextPageToken,files(id,name,createdTime)", pageSize: 1000 };
+    if (pageToken) params.pageToken = pageToken;
+    const data = await driveGet(env, "files", params, { owner: true });
+    all.push(...(data.files || []));
+    pageToken = data.nextPageToken || "";
+  } while (pageToken);
+  return all;
+}
+
+export async function folderName(env, id) {
+  return (await driveGet(env, `files/${id}`, { fields: "name" }, { owner: true })).name || "";
 }
 
 export async function listGallery(env, sourceId) {
@@ -159,15 +228,31 @@ export const getFull = (env, ref) => fetchPublicImage(ref, 2200);
  * that URL serves an HTML "can't scan for viruses" page with a 200. Retries
  * happen here, before any byte is sent. */
 export async function openDownload(env, fileRef, range = null) {
-  if (!env.DRIVE_API_KEY) throw new LuxError(500, "LS-DRV-CFG", "DRIVE_API_KEY is not set");
-  const url = `https://www.googleapis.com/drive/v3/files/${fileRef}?alt=media&key=${env.DRIVE_API_KEY}`;
-  const headers = range ? { Range: range } : {};
+  let auth = await ownerHeaders(env);
+  if (!auth && !env.DRIVE_API_KEY) throw new LuxError(500, "LS-DRV-CFG", "DRIVE_API_KEY is not set");
+  const base = `https://www.googleapis.com/drive/v3/files/${fileRef}?alt=media`;
+  let switched = false;
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
     await pace(env);
+    const url = auth ? `${base}&supportsAllDrives=true` : `${base}&key=${env.DRIVE_API_KEY}`;
+    const headers = { ...(range ? { Range: range } : {}), ...(auth || {}) };
     const res = await fetch(url, { headers, redirect: "follow" });
     if (res.status === 200 || res.status === 206) return res;
     const reason = await errorReason(res);
-    const ctx = `file=${fileRef} status=${res.status} reason=${reason || "-"}`;
+    const ownerRefused = res.status === 401 || res.status === 404 ||
+      (res.status === 403 && reason !== "downloadQuotaExceeded" && !RATE_LIMIT_REASONS.has(reason));
+    if (auth && ownerRefused && !switched) {
+      // 401: the token expired or was revoked, so refresh it. 403/404: the owner
+      // account can't see this file, so use the public API key. Once only, and it
+      // doesn't use up an attempt.
+      switched = true;
+      attempt--;
+      console.warn(`Drive owner download ${fileRef} -> ${res.status} ${reason || ""}; retrying ${res.status === 401 ? "with a fresh token" : "with the API key"}`);
+      auth = res.status === 401 ? await ownerHeaders(env, { force: true }) : null;
+      if (!auth && !env.DRIVE_API_KEY) throw new LuxError(500, "LS-DRV-CFG", "DRIVE_API_KEY is not set");
+      continue;
+    }
+    const ctx = `file=${fileRef} status=${res.status} reason=${reason || "-"}${auth ? " (owner)" : ""}`;
     console.warn(`Drive download ${ctx} (attempt ${attempt + 1}/${MAX_ATTEMPTS})`);
     // Google's per-file download cap; retrying only digs deeper.
     if (reason === "downloadQuotaExceeded") throw new LuxError(503, "LS-DRV-FILE", `file=${fileRef}`);
@@ -175,4 +260,5 @@ export async function openDownload(env, fileRef, range = null) {
     if (attempt === MAX_ATTEMPTS - 1) throw new LuxError(503, "LS-DRV-RATE", ctx);
     await backoff(attempt, res);
   }
+  throw new LuxError(503, "LS-DRV-RATE", `file=${fileRef} no attempts left`);
 }

@@ -553,6 +553,8 @@ footer .footer-link:hover{text-decoration:underline;}
 }
 .dl-report-codes{list-style:none; margin-bottom:var(--space-3); font-size:13px; line-height:18px; color:var(--ink);}
 .dl-report-codes li{margin-bottom:6px;}
+.dl-report-help{margin-bottom:var(--space-3); font-size:13px; line-height:18px; color:var(--ink-muted);}
+.dl-report-help a, .setup-error a{color:var(--cyan-ink); font-weight:600;}
 .dl-report-codes b{font-family:var(--font-mono); color:var(--danger); margin-right:6px;}
 .dl-report-body{
   font-size:11.5px; line-height:16px; color:var(--ink-muted); background:var(--bg); border:1px solid var(--line);
@@ -732,6 +734,7 @@ footer .footer-link:hover{text-decoration:underline;}
     <div class="dl-report" id="dlReport" hidden>
       <div class="dl-report-title">Something went wrong. Screenshot this box and send it to your photographer.</div>
       <ul class="dl-report-codes" id="dlReportCodes"></ul>
+      <p class="dl-report-help" id="dlReportHelp"></p>
       <pre class="dl-report-body mono" id="dlReportBody"></pre>
       <button type="button" class="btn" id="dlCopy">Copy details</button>
     </div>
@@ -830,8 +833,11 @@ footer .footer-link:hover{text-decoration:underline;}
   }
   els.reviewToastClose.addEventListener('click', hideReviewToast);
 
-  function showError(msg){
+  function showError(msg, driveFolder){
     els.setupError.textContent = msg;
+    if(driveFolder){
+      els.setupError.append(' ', driveFolderLink(driveFolder), ' instead.');
+    }
     els.setupError.style.display = 'block';
   }
   function clearError(){ els.setupError.style.display = 'none'; }
@@ -1251,6 +1257,7 @@ footer .footer-link:hover{text-decoration:underline;}
     keep: document.getElementById('dlKeep'), overall: document.getElementById('dlOverall'),
     report: document.getElementById('dlReport'), reportCodes: document.getElementById('dlReportCodes'),
     reportBody: document.getElementById('dlReportBody'), copy: document.getElementById('dlCopy'),
+    reportHelp: document.getElementById('dlReportHelp'),
     toggle: document.getElementById('dlToggle'), list: document.getElementById('dlList'),
     close: document.getElementById('dlClose'),
     parts: document.getElementById('dlParts'), partsNote: document.getElementById('dlPartsNote'),
@@ -1338,6 +1345,30 @@ footer .footer-link:hover{text-decoration:underline;}
       `Time: ${new Date().toISOString()}`,
       `Browser: ${navigator.userAgent}`,
     ].filter(Boolean).join('\n');
+  }
+
+  // The original Drive folder, for when LuxSync itself fails. Not for Google's
+  // own limits: Drive applies the same per-file cap (LS-DRV-FILE), and a file
+  // that's gone (LS-DRV-GONE) is gone there too.
+  const GOOGLE_SIDE = new Set(['LS-DRV-FILE', 'LS-DRV-GONE']);
+  function driveFolderLink(source){
+    const a = document.createElement('a');
+    a.href = `https://drive.google.com/drive/folders/${encodeURIComponent(source)}`;
+    a.target = '_blank'; a.rel = 'noopener';
+    a.textContent = 'Open the original folder in Google Drive';
+    return a;
+  }
+  function dlReportHelp(codes){
+    const help = dlEls.reportHelp;
+    help.textContent = '';
+    const ownFailure = codes.some(c=> !GOOGLE_SIDE.has(c));
+    if(ownFailure && currentProvider === 'drive' && currentSourceId){
+      help.append("LuxSync couldn't finish this. You can also download the files straight from the original folder: ",
+        driveFolderLink(currentSourceId), '. ');
+    } else if(codes.includes('LS-DRV-FILE')){
+      help.append('Google is temporarily limiting downloads of these files. This usually clears within a few hours, so please try again later. ');
+    }
+    help.append('A copy of this report is sent to your photographer automatically.');
   }
 
   // Send the shown report to the photographer's error console (/admin → Errors),
@@ -1430,6 +1461,7 @@ footer .footer-link:hover{text-decoration:underline;}
         dlEls.reportCodes.appendChild(li);
       });
       dlEls.reportBody.textContent = dlReportText(failedRows);
+      dlReportHelp([...seen.keys()]);
       dlQueueReport(failedRows);
     }
 
@@ -1832,13 +1864,17 @@ footer .footer-link:hover{text-decoration:underline;}
       updateSelectionUI();
       applyView();
     } catch(err){
+      // The Drive folder this link points at, so a client can still get their files.
+      const tried = pendingSourceRef;
+      const driveFolder = tried ? (tried.provider === 'drive' ? tried.source : null)
+        : ((/\/folders\/([a-zA-Z0-9_-]{10,})/.exec(rawUrl) || [])[1] || null);
       pendingSourceRef = null;
       pendingView = null;
       els.setup.style.display = 'flex';
       els.galleryHead.style.display = 'none';
       els.folderNav.style.display = 'none';
       els.grid.style.display = 'none';
-      showError('Could not load this gallery — ' + err.message + '. Check the folder is shared publicly.');
+      showError('Could not load this gallery — ' + err.message + '. Check the folder is shared publicly.', driveFolder);
     } finally {
       submitBtn.disabled = false;
       submitBtn.textContent = 'Open Gallery';

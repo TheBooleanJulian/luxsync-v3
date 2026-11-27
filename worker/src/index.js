@@ -7,10 +7,12 @@
 // Worker. Responses keep the shapes index.html and admin.html already expect.
 import * as cache from "./cache.js";
 import * as dl from "./downloads.js";
+import { alertClientReport, alertsConfigured, checkAlerts, sendTelegram } from "./alerts.js";
 import { errorSummary, flushErrors, listErrors, pruneErrors, recordClientReport } from "./errorlog.js";
 import { newJob, readJobs, saveJob } from "./jobs.js";
 import {
-  expireOriginals, listMirrors, openSource, origKey, prepareResponse, registerGallery, runMirror, setPaused,
+  addWatch, expireOriginals, listMirrors, listWatches, openSource, origKey, prepareResponse, registerGallery,
+  removeWatch, runMirror, runWatch, setPaused,
 } from "./mirror.js";
 import * as drive from "./providers/drive.js";
 import * as dropbox from "./providers/dropbox.js";
@@ -368,6 +370,30 @@ async function adminRoutes(request, env, ctx, url) {
     await setPaused(env, providerName, body.source, !!body.paused);
     return json({ ok: true });
   }
+  if (url.pathname === "/api/admin/watch" && request.method === "POST") {
+    // Add or remove a watched folder: {link | source, remove?}
+    await limit(env, request, "ADMIN");
+    let body;
+    try { body = await request.json(); } catch { throw new HttpError(422, "Invalid JSON body"); }
+    const source = drive.parseSource(String(body.source || body.link || ""));
+    if (!source) throw new HttpError(400, "Paste a Google Drive folder link");
+    drive.validateRef(source);
+    if (body.remove) {
+      await removeWatch(env, "drive", source);
+    } else {
+      let name = "";
+      try { name = await drive.folderName(env, source); } catch { /* shown as a scan error later if it can't be read */ }
+      await addWatch(env, "drive", source, name);
+    }
+    return json(await listWatches(env), 200, { "Cache-Control": "no-store" });
+  }
+  if (url.pathname === "/api/admin/alerts/test" && request.method === "POST") {
+    await limit(env, request, "ADMIN");
+    if (!alertsConfigured(env)) throw new HttpError(409, "Telegram alerts aren't set up (TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID)");
+    const ok = await sendTelegram(env, `LuxSync: test alert from ${new URL(request.url).host}. Alerts are working.`);
+    if (!ok) throw new HttpError(502, "Telegram refused the message: check the bot token and chat id");
+    return json({ ok: true });
+  }
   if (request.method !== "GET") throw new HttpError(405, "Method not allowed");
   await limit(env, request, "ADMIN");
   const q = (url.searchParams.get("q") || "").trim();
@@ -385,6 +411,11 @@ async function adminRoutes(request, env, ctx, url) {
     }
     case "/api/admin/errors/summary":
       return json(await errorSummary(env), 200, { "Cache-Control": "no-store" });
+    case "/api/admin/watch":
+      return json(await listWatches(env), 200, { "Cache-Control": "no-store" });
+    case "/api/admin/setup":
+      // Which optional features have their secrets set (never the values).
+      return json({ alerts: alertsConfigured(env), ownerAuth: drive.ownerAuthConfigured(env) }, 200, { "Cache-Control": "no-store" });
     case "/api/admin/stats":
       return json(await dl.stats(env));
     case "/api/admin/downloads": {
@@ -431,7 +462,8 @@ async function route(request, env, ctx) {
     await limit(env, request, "DOWNLOAD");
     let body;
     try { body = await request.json(); } catch { throw new HttpError(422, "Invalid JSON body"); }
-    await recordClientReport(env, request, body);
+    const info = await recordClientReport(env, request, body);
+    ctx.waitUntil(alertClientReport(env, info));
     return new Response(null, { status: 204 });
   }
   if (path === "/api/download-progress" && method === "GET") {
@@ -470,8 +502,9 @@ export default {
   },
 
   // Cron Trigger (wrangler.jsonc): expire originals of galleries not opened for
-  // 30 days, mirror whatever opened galleries are still missing, prune the
-  // error console (ERROR_LOG_DAYS, default 30), and save this run's errors.
+  // 30 days, enrol new galleries from watched folders, mirror whatever is still
+  // missing, prune the error console (ERROR_LOG_DAYS, default 30), save this
+  // run's errors, and send any Telegram alerts that are due.
   async scheduled(event, env, ctx) {
     const failed = (job) => (err) => {
       console.error(`${job} failed`, err);
@@ -479,9 +512,11 @@ export default {
     };
     ctx.waitUntil((async () => {
       await expireOriginals(env).catch(failed("expireOriginals"));
+      await runWatch(env, PROVIDERS).catch(failed("runWatch"));
       await runMirror(env, PROVIDERS).catch(failed("runMirror"));
       await pruneErrors(env).catch(failed("pruneErrors"));
       await flushErrors(env);
+      await checkAlerts(env);
     })());
   },
 };
