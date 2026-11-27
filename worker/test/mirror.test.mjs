@@ -440,3 +440,70 @@ test("ensureSchema adds the new columns to a table created by the previous versi
   await expireOriginals(env);
   assert.ok((await listMirrors(env))[0].expired_at, "a never-reopened gallery falls back to added_at");
 });
+
+// ---------- files Google has no preview of ----------
+import { addWatch, listWatches, runWatch } from "../src/mirror.js";
+import { errorQueue } from "../src/util.js";
+
+test("a file with no Google preview counts as mirrored once its original is in R2", async () => {
+  errorQueue.length = 0;
+  const env = { CACHE: fakeR2(), DB: fakeD1() };
+  const p = galleryProvider([{ id: "insv1234567", name: "VID_001.insv" }, { id: "jpeg1234567", name: "a.jpg" }]);
+  p.getThumb = async () => { throw new LuxError(404, "LS-DRV-GONE", "image status=404"); };
+  p.getFull = async () => { throw new LuxError(404, "LS-DRV-GONE", "image status=404"); };
+  await registerGallery(env, "drive", "folder1234", "Shoot");
+  await runMirror(env, { drive: p });
+  const [g] = await listMirrors(env);
+  assert.equal(g.ready, 2);
+  assert.equal(g.failed, 0);
+  assert.equal(env.CACHE.store.has("drive/orig/insv1234567"), true);
+  assert.equal(errorQueue.length, 0, "an expected missing preview isn't logged as an error");
+});
+
+test("a deleted file still fails: only the original counts", async () => {
+  const env = { CACHE: fakeR2(), DB: fakeD1() };
+  const p = galleryProvider([{ id: "gone1234567", name: "a.jpg" }]);
+  p.getThumb = async () => { throw new LuxError(404, "LS-DRV-GONE", "image status=404"); };
+  p.openDownload = async () => { throw new LuxError(404, "LS-DRV-GONE", "file status=404"); };
+  await registerGallery(env, "drive", "folder1234", "Shoot");
+  await runMirror(env, { drive: p });
+  const [g] = await listMirrors(env);
+  assert.equal(g.ready, 0);
+  assert.equal(g.last_error, "LS-DRV-GONE");
+});
+
+// ---------- watched folders ----------
+test("a watched folder enrols only gallery folders created after it was added", async () => {
+  const env = { CACHE: fakeR2(), DB: fakeD1() };
+  const t0 = Date.parse("2026-11-27T00:00:00Z");
+  let folders = [
+    { id: "old00000001", name: "2026_04_02 Old Shoot", createdTime: "2026-04-02T10:00:00Z" },
+    { id: "late0000001", name: "2026_11_26 Yesterday", createdTime: "2026-11-26T12:00:00Z" },   // inside the 1-day grace
+  ];
+  const provider = { listSubfolders: async () => folders };
+  await addWatch(env, "drive", "deliver2026", "2026", t0);
+  await runWatch(env, { drive: provider }, t0);
+  let rows = await listMirrors(env);
+  assert.deepEqual(rows.map((r) => r.source), ["late0000001"]);
+  assert.equal((await listWatches(env))[0].enrolled, 1);
+
+  // A new delivery shows up on the next scan (after 15 min), and re-scans don't
+  // touch galleries already known (their 30-day clock isn't restarted).
+  folders = [...folders, { id: "new00000001", name: "2026_11_28 New", createdTime: "2026-11-28T09:00:00Z" }];
+  const before = rows[0].last_opened;
+  await runWatch(env, { drive: provider }, t0 + 5 * 60e3);
+  assert.equal((await listMirrors(env)).length, 1, "too soon: not scanned again yet");
+  await runWatch(env, { drive: provider }, Date.parse("2026-11-28T10:00:00Z"));
+  rows = await listMirrors(env);
+  assert.deepEqual(rows.map((r) => r.source).sort(), ["late0000001", "new00000001"]);
+  assert.equal(rows.find((r) => r.source === "late0000001").last_opened, before);
+});
+
+test("a watched folder that can't be read records the error and keeps going", async () => {
+  const env = { CACHE: fakeR2(), DB: fakeD1() };
+  await addWatch(env, "drive", "private0001", "Private");
+  await runWatch(env, { drive: { listSubfolders: async () => { throw new LuxError(404, "LS-DRV-GONE", "folder status=404"); } } });
+  const [w] = await listWatches(env);
+  assert.equal(w.last_error, "LS-DRV-GONE");
+  assert.ok(w.last_scan);
+});

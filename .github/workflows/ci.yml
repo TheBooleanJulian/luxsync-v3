@@ -1,0 +1,28 @@
+# Tests on every PR and on pushes to dev/main. Deploys are Workers Builds' job
+# (main only); this only checks the code.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [dev, main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # The zip test reads its output back with Python's zipfile; the upload tool's tests are pytest.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Worker tests
+        working-directory: worker
+        run: npm test
+      - name: Tool tests
+        run: |
+          pip install pytest
+          python -m pytest -q tests/test_r2_push.py

@@ -6,7 +6,7 @@
 
 **A premium, dependency-free photo gallery that turns any public Google Drive or Dropbox folder into a scrollable, previewable, downloadable client gallery.**
 
-![Version](https://img.shields.io/badge/version-0.17.0-00E5FF)
+![Version](https://img.shields.io/badge/version-0.18.0-00E5FF)
 ![Python](https://img.shields.io/badge/-Python-3776AB?logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/-FastAPI-009688?logo=fastapi&logoColor=white)
 ![Zeabur](https://img.shields.io/badge/-Zeabur-6C5CE7)
@@ -95,6 +95,10 @@ python main.py
 | `ADMIN_USERNAME` | ❌ | Optional username for `/admin`. If set, it must match; if unset, any username is accepted |
 | `DATA_DIR` | ❌ | Directory for the download-log SQLite file (default `data`) |
 | `IP_HASH_SALT` | ❌ | Salt for hashing visitor IPs in the log (defaults to `ADMIN_PASSWORD`) |
+| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` / `GOOGLE_REFRESH_TOKEN` | ❌ | Worker only, secrets. Owner sign-in to Drive (read-only): downloads and watched-folder scans run as the folders' owner, which Google's per-file cap doesn't apply to. Created by `python tools/google_oauth.py`. If unset or failing, the API key is used |
+| `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` | ❌ | Worker only, secrets. Telegram alerts: a client was shown an error (once per gallery per 30 min), Google cap storm (≥ `ALERT_CAP_PER_HOUR`, default 30 cap errors in an hour; once per 6 h), Worker or cron crash (once per hour). Outbound only, no webhook |
+| `ADMIN_URL` | ❌ | Worker only. Dashboard link used in alerts (default `https://luxsync-v3.accurova.com/admin`) |
+| `ERROR_LOG_DAYS` | ❌ | Worker only. Days the error console keeps rows (default 30) |
 
 ### Download tracking
 
@@ -107,7 +111,7 @@ Open `/admin` (set `ADMIN_PASSWORD` first) on either domain. It has four section
 - **Mirror:** *Prepare gallery* and the mirrored-galleries table (see *R2 mirror*).
 - **Downloads:** the **Gallery** and **Single Photo** activity tabs, a deduplicated **Emails** list with opt-in status, search, and CSV export. A chunked "Download All" (over 200 files) is logged once.
 
-Workers logs aren't enabled, so the console is the place to debug. The `console.warn` lines still go to `wrangler tail` while it's running.
+Workers Logs are on too (`observability` in `worker/wrangler.jsonc`) for anything the console misses. The `console.warn` lines still go to `wrangler tail` while it's running.
 
 Notes:
 - **Persistence:** Zeabur's container disk is ephemeral. Mount a persistent volume at `DATA_DIR`, or the log resets on every deploy.
@@ -176,6 +180,8 @@ Differences from the Python app to know about: Drive request pacing is per Worke
 - Files over 256 MB are copied in 256 MB parts (R2 multipart, one ranged download per part). Finished parts are recorded in D1 `mirror_uploads`, so a copy that outlives a cron run resumes where it stopped instead of restarting.
 - **Expiry:** the originals of a gallery nobody has opened for 30 days are deleted from R2. That's every gallery, photos and video alike; `MIRROR_EXPIRE_DAYS` overrides the 30. Thumbnails and previews are kept forever, so an old link still browses instantly. Opening it again restarts the clock and the background mirror copies the originals back; downloads come from the source until it has. Files shared with a gallery opened in the last 30 days (a folder inside another) are kept. `/admin` shows each gallery's last-opened date and an *Originals expired* status.
 - **Blocked by Google's per-file cap (`LS-DRV-FILE`):** the cap also blocks the mirror's own copy. Upload the file from this PC's Drive for Desktop copy instead: `python tools/r2_push.py "<local gallery folder>" <drive folder id>` (add `--dry-run` first to see the matches). It matches local files to the gallery by name, skips ones already in R2 and uses multipart, so there's no size limit. It needs an R2 S3 key in `secrets/r2-s3.env` (`R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`; create it under R2 → *Manage API tokens* → *Object Read & Write*, bucket `luxsync-cache` only). The next cron run marks the files as mirrored. If the gallery later expires, run it again.
+- **Mirror at delivery:** in `/admin#mirror` → *Mirror new galleries automatically*, add the folder you deliver into (e.g. `#CLIENT_DELIVERABLES/2026`). Every 15 minutes the cron enrols each gallery folder created inside it, so it's copied before the client opens the link. Folders already there when it was added are ignored, so a year of old galleries doesn't hit Google's cap at once. A private folder needs the owner sign-in.
+- **No-preview files:** Google can't make previews of some files (Insta360 `.insv`, `.lrv` proxies, some JPEGs). A missing thumbnail or preview counts as "none", and the file is mirrored once its original is in R2.
 - Unmirrored files still come from the source. Storage therefore stays roughly at the originals of galleries opened in the last month, plus ~0.5 MB per photo of thumbnails and previews (~$0.015/GB-month beyond the free 10 GB). Anyone who opens a public folder in LuxSync enrols it, so pause any you don't want copied.
 
 ## Screenshots
@@ -293,6 +299,7 @@ lists the failed files, and a `_MISSING_FILES.txt` inside the zip names them wit
 
 Summarised from commit history, most recent first. Versions follow `0.MINOR.PATCH` — MINOR for new features/architecture changes, PATCH for fixes.
 
+- **v0.18.0 — 2026-11-27 (robustness)** — The mirror no longer retries files Google can't preview forever (57% of the error log): a missing preview counts as "none" once the original is in R2. *Mirror at delivery*: watched folders in `/admin#mirror` enrol new gallery folders every 15 min. Optional owner sign-in to Drive (`tools/google_oauth.py`, read-only) takes downloads past Google's anonymous per-file cap, falling back to the API key if it fails. Optional Telegram alerts for client errors, cap storms and crashes (throttled). A client's error box now links to the original Drive folder when LuxSync itself failed, and says to wait a few hours for Google's cap; a gallery that won't load links to it too. Tests run in GitHub Actions on every PR. Workers Logs on.
 - **v0.17.0 — 2026-11-24 (admin dashboard + error console)** — `/admin` is now a dashboard with *Health*, *Errors*, *Mirror* and *Downloads* sections. Every server error (each `LS-*` code, unhandled crashes, failed cron jobs) is saved to D1 `error_log` with its ref, route, gallery and details. Browsers also send the error report they show visitors (`POST /api/client-error`, rate-limited, validated, size-capped), so a client's screenshot can be matched by its ref. *Health* shows 24-hour totals, Google cap errors in the last hour, an errors-per-hour chart, codes with plain-English meanings, and the galleries not yet fully in R2. Old rows are pruned after `ERROR_LOG_DAYS` (30) by the cron run.
 - **v0.16.2 — 2026-11-23 (mirror fairness)** — About 25 old BNI galleries opened overnight all hit Google's per-file cap (`LS-DRV-FILE`). Each 5-minute run spent its whole 50-file budget re-failing the first files of one gallery, so a new gallery (Fatui, opened 09:18) was never copied, and a client's photo download from it hit the cap. Now never-copied galleries go first, 3 cap errors in a row park a gallery for 3 hours, and each pass starts at a random file.
 - **v0.16.1 — 2026-11-23 (accurova.com domain)** — The Worker also answers on `luxsync-v3.accurova.com` (second custom domain, same Worker, R2 and D1). The logo links are now relative, so visitors stay on whichever domain they came in on. Social-preview tags still point at `luxsync-v3.thebooleanjulian.dev`.
